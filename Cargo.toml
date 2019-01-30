@@ -3,6 +3,11 @@ name = "duktape-rs"
 version = "0.0.1"
 authors = ["envis10n <envis10n@protonmail.com>"]
 edition = "2018"
+repository = "https://gitlab.com/envis10n/duktape-rs"
+readme = "README.md"
+keywords = ["duktape", "dukbind", "js", "javascript"]
+license = "Unlicense"
+description = "Safe(er) rust wrapper for dukbind."
 
 [dependencies]
 dukbind = "0.0.4"
