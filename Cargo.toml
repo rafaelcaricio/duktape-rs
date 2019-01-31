@@ -11,4 +11,3 @@ description = "Safe(er) rust wrapper for dukbind."
 
 [dependencies]
 dukbind = "0.0.4"
-serde_json = "1.0.37"
