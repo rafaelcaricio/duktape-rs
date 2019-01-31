@@ -6,6 +6,7 @@ use std::fmt;
 use std::f64;
 use std::os::raw::c_void;
 
+/// An error code representing why an error occurred.
 #[allow(missing_docs)]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(u32)]
@@ -20,6 +21,7 @@ pub enum DukErrorCode {
     NullPtr
 }
 
+/// Represents a JavaScript number value. JavaScript numbers can be either floats or integers, as well as NaN and Infinity.
 #[derive(Clone, Debug)]
 pub enum DukNumber {
     NaN,
@@ -76,6 +78,7 @@ impl DukNumber {
     }
 }
 
+/// A wrapper around duktape's heapptr. These represent JavaScript objects.
 #[derive(Clone, Debug)]
 pub struct DukObject {
     context: DukContext,
@@ -83,7 +86,7 @@ pub struct DukObject {
 }
 
 impl DukObject {
-    /// Encode to JSON string.
+    /// Encode this object to a JSON string.
     pub fn encode(&mut self) -> Option<String> {
         unsafe {
             match self.context.ctx {
@@ -123,6 +126,7 @@ impl DukObject {
             }
         }
     }
+    /// Get a property on this object as a DukValue.
     pub fn get_prop(&mut self, name: &str) -> DukResult<DukValue> {
         unsafe {
             let ctx = self.context.ctx.expect("Invalid context pointer.");
@@ -136,6 +140,7 @@ impl DukObject {
             }
         }
     }
+    /// Set a property on this object.
     pub fn set_prop(&mut self, name: &str, value: DukValue) -> DukResult<()> {
         match self.context.ctx {
             Some(ctx) => {
@@ -189,6 +194,7 @@ impl DukObject {
             None => Err(DukError::from(DukErrorCode::NullPtr, "Invalid context pointer."))
         }
     }
+    /// Creates a new DukObject from the object at the top of the value stack.
     pub fn new(context: DukContext) -> DukObject {
         unsafe {
             let ctx = context.ctx.expect("Invalid context pointer.");
@@ -203,6 +209,7 @@ impl DukObject {
     }
 }
 
+/// Represents a JavaScript value type.
 #[derive(Clone, Debug)]
 pub enum DukValue {
     Undefined,
@@ -214,6 +221,7 @@ pub enum DukValue {
 }
 
 impl DukValue {
+    /// Return the value as a string.
     pub fn as_str(&self) -> Option<String> {
         match self {
             DukValue::Undefined => Some(String::from("undefined")),
@@ -221,9 +229,10 @@ impl DukValue {
             DukValue::Number(ref n) => Some(String::from(n.as_str())),
             DukValue::Boolean(b) => Some(b.to_string()),
             DukValue::String(s) => Some(s.clone()),
-            DukValue::Object(ref _o) => Some(String::from("[object]"))
+            DukValue::Object(ref _o) => _o.clone().encode()
         }
     }
+    /// Return the value as a duk_bool_t (u32).
     pub fn as_duk_bool(&self) -> Option<duk_bool_t> {
         match self {
             DukValue::Boolean(b) => {
@@ -236,18 +245,21 @@ impl DukValue {
             _ => None
         }
     }
+    /// Return the value as a bool.
     pub fn as_bool(&self) -> Option<bool> {
         match self {
             DukValue::Boolean(b) => Some(*b),
             _ => None
         }
     }
+    /// Return the value as a DukNumber.
     pub fn as_number(&self) -> Option<DukNumber> {
         match self {
             DukValue::Number(ref n) => Some(n.clone()),
             _ => None
         }
     }
+    /// Return the value as a DukObject.
     pub fn as_object(&mut self) -> Option<&mut DukObject> {
         match self {
             DukValue::Object(ref mut o) => {
@@ -256,30 +268,35 @@ impl DukValue {
             _ => None
         }
     }
+    /// Return the value as an f64.
     pub fn as_f64(&self) -> Option<f64> {
         match self {
             DukValue::Number(ref n) => Some(n.as_f64()),
             _ => None
         }
     }
+    /// Check if this value is an f64.
     pub fn is_f64(&self) -> bool {
         match self {
             DukValue::Number(ref n) => n.is_f64(),
             _ => false
         }
     }
+    /// Check if this value is an i64.
     pub fn is_i64(&self) -> bool {
         match self {
             DukValue::Number(ref n) => n.is_i64(),
             _ => false
         }
     }
+    /// Check if this value is a bool.
     pub fn is_bool(&self) -> bool {
         match self {
             DukValue::Boolean(_b) => true,
             _ => false
         }
     }
+    /// Return the value as an i64.
     pub fn as_i64(&self) -> Option<i64> {
         match self {
             DukValue::Number(ref n) => Some(n.as_i64()),
@@ -288,6 +305,7 @@ impl DukValue {
     }
 }
 
+/// Error object representing a duktape error.
 #[derive(PartialEq, Eq, Debug)]
 pub struct DukError {
     /// The error code, if a specific one is available, or
@@ -301,20 +319,21 @@ pub struct DukError {
 }
 
 impl DukError {
+    /// Create a DukError from an error code (no message).
     pub fn from_code(code: DukErrorCode) -> DukError {
         DukError{code: code, message: None}
     }
+    /// Create a DukError from an error message (no code).
     pub fn from_str(message: &str) -> DukError {
         DukError{code: DukErrorCode::Error, message: Some(message.to_string())}
     }
+    /// Create a DukError from a code and message.
     pub fn from(code: DukErrorCode, message: &str) -> DukError {
         DukError{code: code, message: Some(message.to_string())}
     }
+    /// Return the message stored in the DukError (or None if there isn't one).
     pub fn to_string(&self) -> Option<String> {
-        match &self.message {
-            Some(m) => Some(m.clone()),
-            None => None
-        }
+        self.message.clone()
     }
 }
 
@@ -337,24 +356,28 @@ impl fmt::Display for DukError {
 
 pub type DukResult<T> = std::result::Result<T, DukError>;
 
+/// Wrapper around a duktape context. Usable for evaluating and returning values from the context that can be used in Rust.
 #[derive(Clone, Debug)]
 pub struct DukContext {
     pub ctx: Option<*mut duk_context>,
 }
 
 impl DukContext {
-    fn new() -> DukContext {
+    /// Create a duktape context.
+    pub fn new() -> DukContext {
         unsafe {
             DukContext { ctx: Some(duk_create_heap_default()) }
         }
     }
-    fn destroy(&mut self) {
+    /// Destroy the duktape context's heap. Should not be used after calling this.
+    pub fn destroy(&mut self) {
         unsafe {
             duk_destroy_heap(self.ctx.expect("Invalid context pointer."));
             self.ctx = None;
         }
     }
-    fn decode_json(&mut self, json: &str) -> DukValue {
+    /// Decode a JSON string into the context, returning a DukObject.
+    pub fn decode_json(&mut self, json: &str) -> DukValue {
         match self.ctx {
             Some(ctx) => {
                 unsafe {
@@ -366,7 +389,8 @@ impl DukContext {
             None => DukValue::Undefined
         }
     }
-    fn get_value(&mut self) -> DukValue {
+    /// Get a DukValue from the value at the top of the value stack in the context.
+    pub fn get_value(&mut self) -> DukValue {
         unsafe {
             let t = duk_get_type(self.ctx.expect("Invalid context pointer"), -1);
             match t as u32 {
@@ -403,7 +427,8 @@ impl DukContext {
             }
         }
     }
-    fn eval_string(&mut self, code: &str) -> DukResult<DukValue> {
+    /// Evaluate a string, returning the resulting value.
+    pub fn eval_string(&mut self, code: &str) -> DukResult<DukValue> {
         unsafe {
             if duk_eval_string(self.ctx.expect("Invalid context pointer"), code) == 0 {
                 let result = self.get_value();
