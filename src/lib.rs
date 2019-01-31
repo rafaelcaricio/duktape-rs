@@ -16,7 +16,8 @@ pub enum DukErrorCode {
     Range = DUK_ERR_RANGE_ERROR,
     Syntax = DUK_ERR_SYNTAX_ERROR,
     Type = DUK_ERR_TYPE_ERROR,
-    URI = DUK_ERR_URI_ERROR
+    URI = DUK_ERR_URI_ERROR,
+    NullPtr
 }
 
 #[derive(Clone, Debug)]
@@ -82,6 +83,29 @@ pub struct DukObject {
 }
 
 impl DukObject {
+    /// Encode to JSON string.
+    pub fn encode(&mut self) -> Option<String> {
+        unsafe {
+            match self.context.ctx {
+                Some(ctx) => {
+                    let idx = duk_push_heapptr(ctx, self.heap);
+                    if duk_is_undefined(ctx, idx) == 0 {
+                        duk_dup(ctx, idx);
+                        let raw = duk_json_encode(ctx, -1);
+                        use std::ffi::CStr;
+                        let t = CStr::from_ptr(raw);
+                        let cow = t.to_string_lossy();
+                        duk_pop_2(ctx);
+                        Some(String::from(cow))
+                    } else {
+                        duk_pop(ctx);
+                        None
+                    }
+                },
+                None => None
+            }
+        }
+    }
     pub fn get_prop(&mut self, name: &str) -> DukResult<DukValue> {
         unsafe {
             let ctx = self.context.ctx.expect("Invalid context pointer.");
@@ -93,6 +117,59 @@ impl DukObject {
             } else {
                 Err(DukError{ code: DukErrorCode::Error, message: Some("Could not get property.".to_string())})
             }
+        }
+    }
+    pub fn set_prop(&mut self, name: &str, value: DukValue) -> DukResult<()> {
+        match self.context.ctx {
+            Some(ctx) => {
+                unsafe {
+                    duk_push_heapptr(ctx, self.heap);
+                    if duk_is_undefined(ctx, -1) == 0 {
+                        let mut ok: bool = true;
+                        match value {
+                            DukValue::Undefined => duk_push_undefined(ctx),
+                            DukValue::Null => duk_push_null(ctx),
+                            DukValue::Number(ref n) => {
+                                if n.is_nan() {
+                                    duk_push_nan(ctx);
+                                } else if n.is_infinity() {
+                                    duk_push_lstring(ctx, "Infinity".as_ptr() as *const i8, "Infinity".len() as duk_size_t);
+                                } else {
+                                    duk_push_number(ctx, n.as_f64());
+                                }
+                            },
+                            DukValue::Boolean(b) => duk_push_boolean(ctx, value.as_duk_bool().expect("Not a boolean!")),
+                            DukValue::String(s) => {
+                                let t = &s;
+                                duk_push_lstring(ctx, t.as_ptr() as *const i8, t.len() as duk_size_t);
+                            },
+                            DukValue::Object(ref o) => {
+                                duk_push_heapptr(ctx, o.heap);
+                                if duk_is_undefined(ctx, -1) == 1 {
+                                    duk_pop(ctx);
+                                    ok = false;
+                                }
+                            }
+                        };
+                        if ok {
+                            if duk_put_prop_lstring(ctx, -2, name.as_ptr() as *const i8, name.len() as duk_size_t) == 1 {
+                                duk_pop_2(ctx);
+                                Ok(())
+                            } else {
+                                duk_pop_2(ctx);
+                                Err(DukError::from(DukErrorCode::Error, "Failed to set prop."))
+                            }
+                        } else {
+                            duk_pop(ctx);
+                            Err(DukError::from(DukErrorCode::Error, "Error setting prop."))
+                        }
+                    } else {
+                        duk_pop(ctx);
+                        Err(DukError::from(DukErrorCode::NullPtr, "Invalid heap pointer."))
+                    }
+                }
+            },
+            None => Err(DukError::from(DukErrorCode::NullPtr, "Invalid context pointer."))
         }
     }
     pub fn new(context: DukContext) -> DukObject {
@@ -127,6 +204,18 @@ impl DukValue {
             DukValue::Boolean(b) => Some(b.to_string()),
             DukValue::String(s) => Some(s.clone()),
             DukValue::Object(ref _o) => Some(String::from("[object]"))
+        }
+    }
+    pub fn as_duk_bool(&self) -> Option<duk_bool_t> {
+        match self {
+            DukValue::Boolean(b) => {
+                if *b {
+                    Some(1)
+                } else {
+                    Some(0)
+                }
+            },
+            _ => None
         }
     }
     pub fn as_bool(&self) -> Option<bool> {
@@ -164,6 +253,12 @@ impl DukValue {
     pub fn is_i64(&self) -> bool {
         match self {
             DukValue::Number(ref n) => n.is_i64(),
+            _ => false
+        }
+    }
+    pub fn is_bool(&self) -> bool {
+        match self {
+            DukValue::Boolean(_b) => true,
             _ => false
         }
     }
@@ -241,6 +336,18 @@ impl DukContext {
             self.ctx = None;
         }
     }
+    fn decode_json(&mut self, json: &str) -> DukValue {
+        match self.ctx {
+            Some(ctx) => {
+                unsafe {
+                    duk_push_lstring(ctx, json.as_ptr() as *const i8, json.len() as duk_size_t);
+                    duk_json_decode(ctx, -1);
+                    self.get_value()
+                }
+            },
+            None => DukValue::Undefined
+        }
+    }
     fn get_value(&mut self) -> DukValue {
         unsafe {
             let t = duk_get_type(self.ctx.expect("Invalid context pointer"), -1);
@@ -310,43 +417,10 @@ mod tests {
     use super::*;
     #[test]
     fn test_eval_ret() {
-        let mut ctx = DukContext::new();
-        let mut res = ctx.eval_string("({'ok': true})").expect("Eval error!");
-        let o: &mut DukObject = res.as_object().expect("Should be an object here.");
-        match o.get_prop("ok") {
-            Ok(r) => {
-                println!("Test OK {}", r.as_bool().expect("NOT A BOOL"));
-                ctx.destroy();
-            },
-            Err(e) => {
-                println!("Error: {:?}", e);
-                ctx.destroy();
-            }
-        }
-    }
-    #[test]
-    fn test_eval_ret_multi() {
-        let mut ctx = DukContext::new();
-        let mut res = ctx.eval_string("({derp:{ok: true}})").expect("Eval error!");
-        let o: &mut DukObject = res.as_object().expect("Should be an object here.");
-        match o.get_prop("derp") {
-            Ok(mut r) => {
-                let o2: &mut DukObject = r.as_object().expect("Should be another object here!");
-                match o2.get_prop("ok") {
-                    Ok(r2) => {
-                        println!("Test OK: {}", r2.as_bool().expect("Should be a bool here."));
-                        ctx.destroy();
-                    },
-                    Err(e) => {
-                        ctx.destroy();
-                        panic!("{:?}", e);
-                    }
-                }
-            },
-            Err(e) => {
-                ctx.destroy();
-                panic!("Error: {:?}", e);
-            }
-        }
+        // Create a new context
+	    let mut ctx = DukContext::new();
+	    // Eval 5+5
+	    let val = ctx.eval_string("5+5").unwrap();
+	    assert_eq!(val.as_i64().expect("Not an i64"), 10)
     }
 }
