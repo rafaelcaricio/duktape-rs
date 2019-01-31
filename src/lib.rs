@@ -106,6 +106,23 @@ impl DukObject {
             }
         }
     }
+    /// Deletes the object from the heap stash and nullifies the internal heap pointer value.
+    /// The object value is useless after calling this and should no longer be used.
+    pub fn free(&mut self) {
+        unsafe {
+            use std::ptr::null_mut;
+            match self.context.ctx {
+                Some(ctx) => {
+                    duk_push_heap_stash(ctx);
+                    duk_push_pointer(ctx, self.heap);
+                    duk_del_prop(ctx, -2);
+                    duk_pop(ctx);
+                    self.heap = null_mut();
+                },
+                None => ()
+            }
+        }
+    }
     pub fn get_prop(&mut self, name: &str) -> DukResult<DukValue> {
         unsafe {
             let ctx = self.context.ctx.expect("Invalid context pointer.");
@@ -153,10 +170,10 @@ impl DukObject {
                         };
                         if ok {
                             if duk_put_prop_lstring(ctx, -2, name.as_ptr() as *const i8, name.len() as duk_size_t) == 1 {
-                                duk_pop_2(ctx);
+                                duk_pop(ctx);
                                 Ok(())
                             } else {
-                                duk_pop_2(ctx);
+                                duk_pop(ctx);
                                 Err(DukError::from(DukErrorCode::Error, "Failed to set prop."))
                             }
                         } else {
@@ -177,8 +194,9 @@ impl DukObject {
             let ctx = context.ctx.expect("Invalid context pointer.");
             let ptr = duk_get_heapptr(ctx, -1);
             duk_push_heap_stash(ctx);
-            duk_dup(ctx, -2);
-            duk_put_prop_heapptr(ctx, -2, ptr);
+            duk_push_pointer(ctx, ptr);
+            duk_dup(ctx, -3);
+            duk_put_prop(ctx, -3);
             duk_pop(ctx);
             DukObject { heap: ptr, context: context }
         }
@@ -419,8 +437,17 @@ mod tests {
     fn test_eval_ret() {
         // Create a new context
 	    let mut ctx = DukContext::new();
-	    // Eval 5+5
-	    let val = ctx.eval_string("5+5").unwrap();
-	    assert_eq!(val.as_i64().expect("Not an i64"), 10)
+        // Obtain array value from eval
+	    let mut val = ctx.eval_string("([1,2,3])").unwrap();
+        // Get the array as an object
+	    let obj = val.as_object().expect("WAS NOT AN OBJECT");
+        // Set index 3 as 4
+        obj.set_prop("3", DukValue::Number(DukNumber::Int(4))).unwrap();
+        // Encode the object to json and validate it is correct
+        assert_eq!("[1,2,3,4]", obj.encode().expect("Should be a string"));
+        // Free the object for garbage collection
+        obj.free();
+        // Destroy the heap to free the memory
+        ctx.destroy();
     }
 }
