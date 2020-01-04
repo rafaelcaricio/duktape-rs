@@ -10,4 +10,4 @@ license = "Unlicense"
 description = "Safe(er) rust wrapper for dukbind."
 
 [dependencies]
-dukbind = "0.0.4"
+dukbind = { path = "../dukbind" }

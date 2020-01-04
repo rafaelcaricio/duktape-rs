@@ -370,10 +370,9 @@ impl DukContext {
         }
     }
     /// Destroy the duktape context's heap. Should not be used after calling this.
-    pub fn destroy(&mut self) {
+    pub fn destroy(self) {
         unsafe {
             duk_destroy_heap(self.ctx.expect("Invalid context pointer."));
-            self.ctx = None;
         }
     }
     /// Decode a JSON string into the context, returning a DukObject.
