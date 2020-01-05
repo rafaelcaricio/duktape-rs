@@ -5,6 +5,9 @@
 ## Work In Progress
 This library is a work in progress and is currently limited in features.
 
+ - [ ] Remove `as_number`/`as_str`/`as_*` in general and use `From<T>` trait instead.
+ - [ ] Revisit error handling and maybe change to use `anyhow`.
+
 ## What can it do?
 At the moment, duktape-rs
 

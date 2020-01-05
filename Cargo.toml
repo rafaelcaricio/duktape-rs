@@ -11,3 +11,4 @@ description = "Safe(er) rust wrapper for dukbind."
 
 [dependencies]
 dukbind = { path = "../dukbind" }
+anyhow = "1.0.26"
