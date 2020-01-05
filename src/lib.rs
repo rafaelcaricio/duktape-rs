@@ -99,12 +99,12 @@ impl DukNumber {
 
 /// A wrapper around duktape's heapptr. These represent JavaScript objects.
 #[derive(Debug)]
-pub struct DukObject<'a> {
+pub struct Object<'a> {
     context: &'a Context,
     heap: NonNull<c_void>,
 }
 
-impl<'a> Drop for DukObject<'a> {
+impl<'a> Drop for Object<'a> {
     /// Deletes the object from the heap stash and nullifies the internal heap pointer value.
     /// The object value is useless after calling this and should no longer be used.
     fn drop(&mut self) {
@@ -118,7 +118,7 @@ impl<'a> Drop for DukObject<'a> {
     }
 }
 
-impl<'a> DukObject<'a> {
+impl<'a> Object<'a> {
     /// Creates a new DukObject from the object at the top of the value stack.
     pub fn new(context: &'a Context) -> Self {
         let ctx = context.ctx.as_ptr();
@@ -155,7 +155,7 @@ impl<'a> DukObject<'a> {
     }
 
     /// Get a property on this object as a DukValue.
-    pub fn get_prop(&self, name: &str) -> DukResult<DukValue> {
+    pub fn get(&self, name: &str) -> DukResult<Value> {
         let ctx = self.context.ctx.as_ptr();
         unsafe {
             let idx = duk_push_heapptr(ctx, self.heap.as_ptr());
@@ -179,9 +179,9 @@ impl<'a> DukObject<'a> {
     }
 
     /// Set a property on this object.
-    pub fn set_prop<'z, T>(&self, name: &str, value: T) -> DukResult<()>
+    pub fn set<'z, T>(&self, name: &str, value: T) -> DukResult<()>
     where
-        T: TryInto<DukValue<'z>>,
+        T: TryInto<Value<'z>>,
     {
         let ctx = self.context.ctx.as_ptr();
         unsafe {
@@ -196,9 +196,9 @@ impl<'a> DukObject<'a> {
                     }
                 };
                 match duk_val {
-                    DukValue::Undefined => duk_push_undefined(ctx),
-                    DukValue::Null => duk_push_null(ctx),
-                    DukValue::Number(ref n) => {
+                    Value::Undefined => duk_push_undefined(ctx),
+                    Value::Null => duk_push_null(ctx),
+                    Value::Number(ref n) => {
                         if n.is_nan() {
                             duk_push_nan(ctx);
                         } else if n.is_infinity() {
@@ -212,12 +212,12 @@ impl<'a> DukObject<'a> {
                             duk_push_number(ctx, n.as_f64());
                         }
                     }
-                    DukValue::Boolean(b) => duk_push_boolean(ctx, b as duk_bool_t),
-                    DukValue::String(s) => {
+                    Value::Boolean(b) => duk_push_boolean(ctx, b as duk_bool_t),
+                    Value::String(s) => {
                         let t = &s;
                         duk_push_lstring(ctx, t.as_ptr() as *const i8, t.len() as duk_size_t);
                     }
-                    DukValue::Object(ref o) => {
+                    Value::Object(ref o) => {
                         duk_push_heapptr(ctx, o.heap.as_ptr());
                         if duk_is_undefined(ctx, -1) == 1 {
                             duk_pop(ctx);
@@ -256,38 +256,38 @@ impl<'a> DukObject<'a> {
 
 /// Represents a JavaScript value type.
 #[derive(Debug)]
-pub enum DukValue<'a> {
+pub enum Value<'a> {
     Undefined,
     Null,
     Number(DukNumber),
     Boolean(bool),
     String(String),
-    Object(DukObject<'a>),
+    Object(Object<'a>),
 }
 
-impl<'a> From<bool> for DukValue<'a> {
+impl<'a> From<bool> for Value<'a> {
     fn from(value: bool) -> Self {
-        DukValue::Boolean(value)
+        Value::Boolean(value)
     }
 }
 
-impl<'a> From<String> for DukValue<'a> {
+impl<'a> From<String> for Value<'a> {
     fn from(value: String) -> Self {
-        DukValue::String(value)
+        Value::String(value)
     }
 }
 
-impl<'a> From<&'a str> for DukValue<'a> {
+impl<'a> From<&'a str> for Value<'a> {
     fn from(value: &str) -> Self {
-        DukValue::String(String::from(value))
+        Value::String(String::from(value))
     }
 }
 
-impl<'a> TryInto<bool> for DukValue<'a> {
+impl<'a> TryInto<bool> for Value<'a> {
     type Error = DukError;
 
     fn try_into(self) -> Result<bool, Self::Error> {
-        if let DukValue::Boolean(b) = self {
+        if let Value::Boolean(b) = self {
             Ok(b)
         } else {
             Err(DukError::from_str("Could not convert value to boolean"))
@@ -295,17 +295,17 @@ impl<'a> TryInto<bool> for DukValue<'a> {
     }
 }
 
-impl<'a> TryInto<String> for DukValue<'a> {
+impl<'a> TryInto<String> for Value<'a> {
     type Error = DukError;
 
     fn try_into(self) -> Result<String, Self::Error> {
         match self {
-            DukValue::Undefined => Ok(String::from("undefined")),
-            DukValue::Null => Ok(String::from("null")),
-            DukValue::Number(n) => Ok(String::from(n.as_str())),
-            DukValue::Boolean(b) => Ok(b.to_string()),
-            DukValue::String(s) => Ok(s.clone()),
-            DukValue::Object(o) => match o.encode() {
+            Value::Undefined => Ok(String::from("undefined")),
+            Value::Null => Ok(String::from("null")),
+            Value::Number(n) => Ok(String::from(n.as_str())),
+            Value::Boolean(b) => Ok(b.to_string()),
+            Value::String(s) => Ok(s.clone()),
+            Value::Object(o) => match o.encode() {
                 Some(encoded) => Ok(encoded),
                 None => Err(DukError::from_str("Could not convert object to String")),
             },
@@ -313,19 +313,23 @@ impl<'a> TryInto<String> for DukValue<'a> {
     }
 }
 
-impl<'a> DukValue<'a> {
+impl<'a> TryInto<Object<'a>> for Value<'a> {
+    type Error = DukError;
+
+    fn try_into(self) -> Result<Object<'a>, Self::Error> {
+        if let Value::Object(o) = self {
+            Ok(o)
+        } else {
+            Err(DukError::from_str("Could not convert DukValue to DukObject"))
+        }
+    }
+}
+
+impl<'a> Value<'a> {
     /// Return the value as a DukNumber.
     pub fn as_number(&self) -> Option<DukNumber> {
         match self {
-            DukValue::Number(ref n) => Some(n.clone()),
-            _ => None,
-        }
-    }
-
-    /// Return the value as a DukObject.
-    pub fn as_object(&self) -> Option<&'a DukObject> {
-        match self {
-            DukValue::Object(o) => Some(o),
+            Value::Number(ref n) => Some(n.clone()),
             _ => None,
         }
     }
@@ -333,7 +337,7 @@ impl<'a> DukValue<'a> {
     /// Return the value as an f64.
     pub fn as_f64(&self) -> Option<f64> {
         match self {
-            DukValue::Number(ref n) => Some(n.as_f64()),
+            Value::Number(ref n) => Some(n.as_f64()),
             _ => None,
         }
     }
@@ -341,7 +345,7 @@ impl<'a> DukValue<'a> {
     /// Check if this value is an f64.
     pub fn is_f64(&self) -> bool {
         match self {
-            DukValue::Number(ref n) => n.is_f64(),
+            Value::Number(ref n) => n.is_f64(),
             _ => false,
         }
     }
@@ -349,7 +353,7 @@ impl<'a> DukValue<'a> {
     /// Check if this value is an i64.
     pub fn is_i64(&self) -> bool {
         match self {
-            DukValue::Number(ref n) => n.is_i64(),
+            Value::Number(ref n) => n.is_i64(),
             _ => false,
         }
     }
@@ -357,7 +361,7 @@ impl<'a> DukValue<'a> {
     /// Check if this value is a bool.
     pub fn is_bool(&self) -> bool {
         match self {
-            DukValue::Boolean(_b) => true,
+            Value::Boolean(_b) => true,
             _ => false,
         }
     }
@@ -365,7 +369,7 @@ impl<'a> DukValue<'a> {
     /// Return the value as an i64.
     pub fn as_i64(&self) -> Option<i64> {
         match self {
-            DukValue::Number(ref n) => Some(n.as_i64()),
+            Value::Number(ref n) => Some(n.as_i64()),
             _ => None,
         }
     }
@@ -450,7 +454,7 @@ impl Context {
     }
 
     /// Decode a JSON string into the context, returning a DukObject.
-    pub fn decode_json(&mut self, json: &str) -> DukValue {
+    pub fn decode_json(&mut self, json: &str) -> Value {
         unsafe {
             duk_push_lstring(
                 self.ctx.as_ptr(),
@@ -463,27 +467,27 @@ impl Context {
     }
 
     /// Get a DukValue from the value at the top of the value stack in the context.
-    pub fn get(&self) -> DukValue {
+    pub fn get(&self) -> Value {
         let duk_type = unsafe { duk_get_type(self.ctx.as_ptr(), -1) as u32 };
         match duk_type {
-            DUK_TYPE_NONE => DukValue::Null,
-            DUK_TYPE_UNDEFINED => DukValue::Undefined,
-            DUK_TYPE_NULL => DukValue::Null,
+            DUK_TYPE_NONE => Value::Null,
+            DUK_TYPE_UNDEFINED => Value::Undefined,
+            DUK_TYPE_NULL => Value::Null,
             DUK_TYPE_BOOLEAN => {
                 let val = unsafe { duk_get_boolean(self.ctx.as_ptr(), -1) };
-                DukValue::Boolean(val == 1)
+                Value::Boolean(val == 1)
             }
             DUK_TYPE_NUMBER => {
                 let v = unsafe { duk_get_number(self.ctx.as_ptr(), -1) };
                 if v.fract() > 0_f64 {
-                    DukValue::Number(DukNumber::Float(v))
+                    Value::Number(DukNumber::Float(v))
                 } else {
                     if v.is_nan() {
-                        DukValue::Number(DukNumber::NaN)
+                        Value::Number(DukNumber::NaN)
                     } else if v.is_infinite() {
-                        DukValue::Number(DukNumber::Infinity)
+                        Value::Number(DukNumber::Infinity)
                     } else {
-                        DukValue::Number(DukNumber::Int(v as i64))
+                        Value::Number(DukNumber::Int(v as i64))
                     }
                 }
             }
@@ -493,17 +497,17 @@ impl Context {
                     CStr::from_ptr(v)
                 };
                 let cow = v.to_string_lossy();
-                DukValue::String(String::from(cow))
+                Value::String(String::from(cow))
             }
             DUK_TYPE_OBJECT => {
-                let obj = DukObject::new(self);
-                DukValue::Object(obj)
+                let obj = Object::new(self);
+                Value::Object(obj)
             }
-            _ => DukValue::Undefined,
+            _ => Value::Undefined,
         }
     }
     /// Evaluate a string, returning the resulting value.
-    pub fn eval_string(&self, code: &str) -> DukResult<DukValue> {
+    pub fn eval_string(&self, code: &str) -> DukResult<Value> {
         unsafe {
             if duk_eval_string(self.ctx.as_ptr(), code) == 0 {
                 let result = self.get();
@@ -569,17 +573,17 @@ mod tests {
     fn test_eval_to_object() {
         let ctx = Context::new().unwrap();
         let val = ctx.eval_string("({\"some\":\"thing\"})").unwrap();
-        assert!(val.as_object().is_some());
+        let _: Object = val.try_into().unwrap();
     }
 
     #[test]
     fn test_set_obj_prop_str() {
         let ctx = Context::new().unwrap();
         let val = ctx.eval_string("({\"some\":\"thing\"})").unwrap();
-        let obj = val.as_object().unwrap();
+        let obj: Object = val.try_into().unwrap();
 
-        obj.set_prop("other", String::from("name")).unwrap();
-        obj.set_prop("another", "name").unwrap();
+        obj.set("other", String::from("name")).unwrap();
+        obj.set("another", "name").unwrap();
 
         assert_eq!(
             obj.encode().unwrap().as_str(),
@@ -591,10 +595,10 @@ mod tests {
     fn test_set_obj_prop_bool() {
         let ctx = Context::new().unwrap();
         let val = ctx.eval_string("({\"some\":\"thing\"})").unwrap();
-        let obj = val.as_object().unwrap();
+        let obj: Object = val.try_into().unwrap();
 
-        obj.set_prop("other", true).unwrap();
-        obj.set_prop("another", false).unwrap();
+        obj.set("other", true).unwrap();
+        obj.set("another", false).unwrap();
 
         assert_eq!(
             obj.encode().unwrap().as_str(),
@@ -606,9 +610,9 @@ mod tests {
     fn test_get_prop_from_object() {
         let ctx = Context::new().unwrap();
         let val = ctx.eval_string("({\"some\":\"thing\"})").unwrap();
-        let obj = val.as_object().unwrap();
+        let obj: Object = val.try_into().unwrap();
 
-        let value: String = obj.get_prop("some").unwrap().try_into().unwrap();
+        let value: String = obj.get("some").unwrap().try_into().unwrap();
 
         assert_eq!(value.as_str(), "thing");
     }
@@ -620,9 +624,9 @@ mod tests {
         // Obtain array value from eval
         let val = ctx.eval_string("([1,2,3])").unwrap();
         // Get the array as an object
-        let obj = val.as_object().expect("WAS NOT AN OBJECT");
+        let obj: Object = val.try_into().unwrap();
         // Set index 3 as 4
-        obj.set_prop("3", DukValue::Number(DukNumber::Int(4)))
+        obj.set("3", Value::Number(DukNumber::Int(4)))
             .unwrap();
         // Encode the object to json and validate it is correct
         assert_eq!("[1,2,3,4]", obj.encode().expect("Should be a string"));

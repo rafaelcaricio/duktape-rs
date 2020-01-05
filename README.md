@@ -43,13 +43,12 @@ Objects in duktape are returned as heap pointers that have to be stored and retu
 ```rust
 let ctx = Context::new()?;
 
-let result = ctx.eval_string("({ok: false})")?;
-let obj = result.as_object().unwrap();
+let obj: Object = ctx.eval_string("({ok: false})")?.try_into()?;
 
-let val: bool = obj.get_prop("ok")?.try_into()?;
+let val: bool = obj.get("ok")?.try_into()?;
 println!("Value: {}", val); //-> Value: false
 
-obj.set_prop("ok", true)?;
+obj.set("ok", true)?;
 println!("Object with new value: {}", obj.encode().unwrap()); //-> Object with new value: {"ok":true}
 
 ```
