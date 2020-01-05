@@ -24,31 +24,28 @@ Check back another time for documentation *Coming Soon™*
 
 ## Basics
 
-    extern crate duktape-rs;
-    
-    use duktape-rs::DukContext;
+    use duktape::DukContext;
     
     fn main() {
-	    // Create a new context
-	    let mut ctx = DukContext::new();
-	    
-	    // Eval 5+5
-	    let val = ctx.eval_string("5+5").unwrap();
-	    
-	    // Destroy the heap (do this when you are done using the context)
-	    ctx.destroy();
-	    
-	    // Compare the value as an i64 against 10
-	    assert_eq!(val.as_i64().expect("Not an i64"), 10)
+        // Create a new context
+        let ctx = DukContext::new().unwrap();
+        // Eval 5+5
+        let val = ctx.eval_string("5+5").unwrap();
+        // Get resulting value as an i64
+        println!("Result is: {}", val.as_i64().expect("Not an i64"))
     }
 
 ## Objects
 Objects in duktape are returned as heap pointers that have to be stored and returned as a wrapper around that pointer.
 
-    let mut ctx = DukContext::new();
-    
-    let obj = ctx.eval_string("({ok: true})").unwrap().as_object().expect("Not an object");
-    
-    let val = obj.get_prop("ok").unwrap().as_bool().expect("Not a bool");
-    
-    println!("Value: {}", val); //-> Value: true
+    let ctx = DukContext::new()?;
+
+    let result = ctx.eval_string("({ok: false})")?;
+    let obj = result.as_object().unwrap();
+
+    let val: bool = obj.get_prop("ok")?.try_into()?;
+    println!("Value: {}", val); //-> Value: false
+
+    obj.set_prop("ok", true)?;
+    println!("Object with new value: {}", obj.encode().unwrap()); //-> Object with new value: {"ok":true}
+
