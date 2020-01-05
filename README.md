@@ -25,11 +25,11 @@ Check back another time for documentation *Coming Soon™*
 ## Basics
 
 ```rust
-use duktape::DukContext;
+use duktape::Context;
 
 fn main() {
     // Create a new context
-    let ctx = DukContext::new().unwrap();
+    let ctx = Context::new().unwrap();
     // Eval 5+5
     let val = ctx.eval_string("5+5").unwrap();
     // Get resulting value as an i64
@@ -41,7 +41,7 @@ fn main() {
 Objects in duktape are returned as heap pointers that have to be stored and returned as a wrapper around that pointer.
 
 ```rust
-let ctx = DukContext::new()?;
+let ctx = Context::new()?;
 
 let result = ctx.eval_string("({ok: false})")?;
 let obj = result.as_object().unwrap();

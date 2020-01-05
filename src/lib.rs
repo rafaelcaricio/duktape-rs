@@ -100,7 +100,7 @@ impl DukNumber {
 /// A wrapper around duktape's heapptr. These represent JavaScript objects.
 #[derive(Debug)]
 pub struct DukObject<'a> {
-    context: &'a DukContext,
+    context: &'a Context,
     heap: NonNull<c_void>,
 }
 
@@ -120,7 +120,7 @@ impl<'a> Drop for DukObject<'a> {
 
 impl<'a> DukObject<'a> {
     /// Creates a new DukObject from the object at the top of the value stack.
-    pub fn new(context: &'a DukContext) -> Self {
+    pub fn new(context: &'a Context) -> Self {
         let ctx = context.ctx.as_ptr();
         let heap = unsafe {
             let ptr = duk_get_heapptr(ctx, -1);
@@ -426,11 +426,11 @@ pub type DukResult<T> = std::result::Result<T, DukError>;
 
 /// Wrapper around a duktape context. Usable for evaluating and returning values from the context that can be used in Rust.
 #[derive(Clone, Debug)]
-pub struct DukContext {
+pub struct Context {
     ctx: NonNull<duk_context>,
 }
 
-impl Drop for DukContext {
+impl Drop for Context {
     fn drop(&mut self) {
         let raw_ctx = self.ctx.as_ptr();
         unsafe {
@@ -439,9 +439,9 @@ impl Drop for DukContext {
     }
 }
 
-impl DukContext {
+impl Context {
     /// Create a duktape context.
-    pub fn new() -> anyhow::Result<DukContext> {
+    pub fn new() -> anyhow::Result<Context> {
         let ctx = unsafe { NonNull::new(duk_create_heap_default()) };
         match ctx {
             Some(ctx) => Ok(Self { ctx }),
@@ -534,14 +534,14 @@ mod tests {
 
     #[test]
     fn test_create_context() {
-        let ctx = DukContext::new();
+        let ctx = Context::new();
         assert!(ctx.is_ok());
         drop(ctx);
     }
 
     #[test]
     fn test_eval_to_number() {
-        let ctx = DukContext::new().unwrap();
+        let ctx = Context::new().unwrap();
         let val = ctx.eval_string("10+5").unwrap();
         let val = val.as_number().unwrap();
         assert_eq!(val, DukNumber::Int(15));
@@ -549,14 +549,14 @@ mod tests {
 
     #[test]
     fn test_eval_to_bool() {
-        let ctx = DukContext::new().unwrap();
+        let ctx = Context::new().unwrap();
         let val: bool = ctx.eval_string("true").unwrap().try_into().unwrap();
         assert_eq!(val, true);
     }
 
     #[test]
     fn test_eval_to_string() {
-        let ctx = DukContext::new().unwrap();
+        let ctx = Context::new().unwrap();
         let val: String = ctx
             .eval_string("'something'.toUpperCase()")
             .unwrap()
@@ -567,14 +567,14 @@ mod tests {
 
     #[test]
     fn test_eval_to_object() {
-        let ctx = DukContext::new().unwrap();
+        let ctx = Context::new().unwrap();
         let val = ctx.eval_string("({\"some\":\"thing\"})").unwrap();
         assert!(val.as_object().is_some());
     }
 
     #[test]
     fn test_set_obj_prop_str() {
-        let ctx = DukContext::new().unwrap();
+        let ctx = Context::new().unwrap();
         let val = ctx.eval_string("({\"some\":\"thing\"})").unwrap();
         let obj = val.as_object().unwrap();
 
@@ -589,7 +589,7 @@ mod tests {
 
     #[test]
     fn test_set_obj_prop_bool() {
-        let ctx = DukContext::new().unwrap();
+        let ctx = Context::new().unwrap();
         let val = ctx.eval_string("({\"some\":\"thing\"})").unwrap();
         let obj = val.as_object().unwrap();
 
@@ -604,7 +604,7 @@ mod tests {
 
     #[test]
     fn test_get_prop_from_object() {
-        let ctx = DukContext::new().unwrap();
+        let ctx = Context::new().unwrap();
         let val = ctx.eval_string("({\"some\":\"thing\"})").unwrap();
         let obj = val.as_object().unwrap();
 
@@ -616,7 +616,7 @@ mod tests {
     #[test]
     fn test_eval_ret() {
         // Create a new context
-        let ctx = DukContext::new().unwrap();
+        let ctx = Context::new().unwrap();
         // Obtain array value from eval
         let val = ctx.eval_string("([1,2,3])").unwrap();
         // Get the array as an object

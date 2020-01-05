@@ -1,9 +1,9 @@
-use duktape::DukContext;
+use duktape::Context;
 use std::convert::TryInto;
 use std::error::Error;
 
 fn main() -> Result<(), Box<dyn Error>> {
-    let ctx = DukContext::new()?;
+    let ctx = Context::new()?;
 
     let result = ctx.eval_string("({ok: false})")?;
     let obj = result.as_object().unwrap();
