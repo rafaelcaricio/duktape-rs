@@ -166,7 +166,7 @@ impl<'a> DukObject<'a> {
                 name.len() as duk_size_t,
             ) == 1
             {
-                let result = self.context.get_value();
+                let result = self.context.get();
                 duk_pop(ctx);
                 Ok(result)
             } else {
@@ -459,13 +459,13 @@ impl DukContext {
             );
             duk_json_decode(self.ctx.as_ptr(), -1);
         }
-        self.get_value()
+        self.get()
     }
 
     /// Get a DukValue from the value at the top of the value stack in the context.
-    pub fn get_value(&self) -> DukValue {
-        let r#type = unsafe { duk_get_type(self.ctx.as_ptr(), -1) as u32 };
-        match r#type {
+    pub fn get(&self) -> DukValue {
+        let duk_type = unsafe { duk_get_type(self.ctx.as_ptr(), -1) as u32 };
+        match duk_type {
             DUK_TYPE_NONE => DukValue::Null,
             DUK_TYPE_UNDEFINED => DukValue::Undefined,
             DUK_TYPE_NULL => DukValue::Null,
@@ -506,7 +506,7 @@ impl DukContext {
     pub fn eval_string(&self, code: &str) -> DukResult<DukValue> {
         unsafe {
             if duk_eval_string(self.ctx.as_ptr(), code) == 0 {
-                let result = self.get_value();
+                let result = self.get();
                 duk_pop_2(self.ctx.as_ptr());
                 Ok(result)
             } else {
@@ -518,7 +518,7 @@ impl DukContext {
                     name.as_ptr() as *const i8,
                     name.len() as duk_size_t,
                 );
-                let val = self.get_value();
+                let val = self.get();
                 duk_pop(self.ctx.as_ptr());
                 let val: String = val.try_into()?;
                 let c: DukErrorCode = mem::transmute(code);
