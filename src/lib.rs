@@ -10,6 +10,7 @@ use dukbind::{
     DUK_ERR_TYPE_ERROR, DUK_ERR_URI_ERROR, DUK_TYPE_BOOLEAN, DUK_TYPE_NONE, DUK_TYPE_NULL,
     DUK_TYPE_NUMBER, DUK_TYPE_OBJECT, DUK_TYPE_STRING, DUK_TYPE_UNDEFINED,
 };
+use std::convert::TryInto;
 use std::error::Error;
 use std::f64;
 use std::ffi::CStr;
@@ -17,7 +18,6 @@ use std::fmt;
 use std::mem;
 use std::os::raw::c_void;
 use std::ptr::NonNull;
-use std::convert::TryInto;
 
 /// An error code representing why an error occurred.
 #[allow(missing_docs)]
@@ -179,13 +179,23 @@ impl<'a> DukObject<'a> {
     }
 
     /// Set a property on this object.
-    pub fn set_prop(&self, name: &str, value: DukValue) -> DukResult<()> {
+    pub fn set_prop<'z, T>(&self, name: &str, value: T) -> DukResult<()>
+    where
+        T: TryInto<DukValue<'z>>,
+    {
         let ctx = self.context.ctx.as_ptr();
         unsafe {
             duk_push_heapptr(ctx, self.heap.as_ptr());
             if duk_is_undefined(ctx, -1) == 0 {
                 let mut ok = true;
-                match value {
+                let duk_val = match value.try_into() {
+                    Ok(v) => v,
+                    Err(_) => {
+                        let err_msg = format!("Could not convert parameter to DukValue");
+                        return Err(DukError::from_str(err_msg));
+                    }
+                };
+                match duk_val {
                     DukValue::Undefined => duk_push_undefined(ctx),
                     DukValue::Null => duk_push_null(ctx),
                     DukValue::Number(ref n) => {
@@ -264,6 +274,12 @@ impl<'a> From<bool> for DukValue<'a> {
 impl<'a> From<String> for DukValue<'a> {
     fn from(value: String) -> Self {
         DukValue::String(value)
+    }
+}
+
+impl<'a> From<&'a str> for DukValue<'a> {
+    fn from(value: &str) -> Self {
+        DukValue::String(String::from(value))
     }
 }
 
@@ -372,27 +388,25 @@ impl DukError {
     /// Create a DukError from an error code (no message).
     pub fn from_code(code: DukErrorCode) -> DukError {
         DukError {
-            code: code,
+            code,
             message: None,
         }
     }
+
     /// Create a DukError from an error message (no code).
-    pub fn from_str(message: &str) -> DukError {
+    pub fn from_str<T: AsRef<str>>(message: T) -> DukError {
         DukError {
             code: DukErrorCode::Error,
-            message: Some(message.to_string()),
+            message: Some(String::from(message.as_ref())),
         }
     }
+
     /// Create a DukError from a code and message.
     pub fn from(code: DukErrorCode, message: &str) -> DukError {
         DukError {
-            code: code,
+            code,
             message: Some(message.to_string()),
         }
-    }
-    /// Return the message stored in the DukError (or None if there isn't one).
-    pub fn to_string(&self) -> Option<String> {
-        self.message.clone()
     }
 }
 
@@ -543,7 +557,11 @@ mod tests {
     #[test]
     fn test_eval_to_string() {
         let ctx = DukContext::new().unwrap();
-        let val: String = ctx.eval_string("'something'.toUpperCase()").unwrap().try_into().unwrap();
+        let val: String = ctx
+            .eval_string("'something'.toUpperCase()")
+            .unwrap()
+            .try_into()
+            .unwrap();
         assert_eq!(val.as_str(), "SOMETHING");
     }
 
@@ -555,13 +573,33 @@ mod tests {
     }
 
     #[test]
-    fn test_set_obj_prop() {
+    fn test_set_obj_prop_str() {
         let ctx = DukContext::new().unwrap();
         let val = ctx.eval_string("({\"some\":\"thing\"})").unwrap();
         let obj = val.as_object().unwrap();
-        let s = String::from("name");
-        obj.set_prop("other", s.into()).unwrap();
-        assert_eq!(obj.encode().unwrap().as_str(), "{\"some\":\"thing\",\"other\":\"name\"}");
+
+        obj.set_prop("other", String::from("name")).unwrap();
+        obj.set_prop("another", "name").unwrap();
+
+        assert_eq!(
+            obj.encode().unwrap().as_str(),
+            "{\"some\":\"thing\",\"other\":\"name\",\"another\":\"name\"}"
+        );
+    }
+
+    #[test]
+    fn test_set_obj_prop_bool() {
+        let ctx = DukContext::new().unwrap();
+        let val = ctx.eval_string("({\"some\":\"thing\"})").unwrap();
+        let obj = val.as_object().unwrap();
+
+        obj.set_prop("other", true).unwrap();
+        obj.set_prop("another", false).unwrap();
+
+        assert_eq!(
+            obj.encode().unwrap().as_str(),
+            "{\"some\":\"thing\",\"other\":true,\"another\":false}"
+        );
     }
 
     #[test]
@@ -569,7 +607,9 @@ mod tests {
         let ctx = DukContext::new().unwrap();
         let val = ctx.eval_string("({\"some\":\"thing\"})").unwrap();
         let obj = val.as_object().unwrap();
+
         let value: String = obj.get_prop("some").unwrap().try_into().unwrap();
+
         assert_eq!(value.as_str(), "thing");
     }
 
