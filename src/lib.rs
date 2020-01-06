@@ -36,63 +36,42 @@ pub enum DukErrorCode {
 
 /// Represents a JavaScript number value. JavaScript numbers can be either floats or integers, as well as NaN and Infinity.
 #[derive(Clone, Debug, PartialEq)]
-pub enum DukNumber {
+pub enum Number {
     NaN,
     Infinity,
     Float(f64),
     Int(i64),
 }
 
-impl DukNumber {
-    pub fn as_str(&self) -> String {
+impl fmt::Display for Number {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            DukNumber::NaN => "NaN".to_string(),
-            DukNumber::Infinity => "Infinity".to_string(),
-            DukNumber::Float(v) => v.clone().to_string(),
-            DukNumber::Int(v) => v.clone().to_string(),
+            Number::NaN => write!(f, "NaN"),
+            Number::Infinity => write!(f, "Infinity"),
+            Number::Float(v) => write!(f, "{}", v),
+            Number::Int(v) => write!(f, "{}", v),
         }
     }
+}
 
-    pub fn is_f64(&self) -> bool {
-        match self {
-            DukNumber::Int(_v) => false,
-            _ => true,
+impl From<Number> for i64 {
+    fn from(val: Number) -> Self {
+        match val {
+            Number::NaN => f64::NAN as i64,
+            Number::Infinity => f64::INFINITY as i64,
+            Number::Float(v) => v as i64,
+            Number::Int(v) => v,
         }
     }
+}
 
-    pub fn is_i64(&self) -> bool {
-        self.is_f64() == false
-    }
-
-    pub fn is_nan(&self) -> bool {
-        match self {
-            DukNumber::NaN => true,
-            _ => false,
-        }
-    }
-
-    pub fn is_infinity(&self) -> bool {
-        match self {
-            DukNumber::Infinity => true,
-            _ => false,
-        }
-    }
-
-    pub fn as_f64(&self) -> f64 {
-        match self {
-            DukNumber::NaN => f64::NAN,
-            DukNumber::Infinity => f64::INFINITY,
-            DukNumber::Float(v) => *v,
-            DukNumber::Int(v) => *v as f64,
-        }
-    }
-
-    pub fn as_i64(&self) -> i64 {
-        match self {
-            DukNumber::NaN => f64::NAN as i64,
-            DukNumber::Infinity => f64::INFINITY as i64,
-            DukNumber::Float(v) => *v as i64,
-            DukNumber::Int(v) => *v,
+impl From<Number> for f64 {
+    fn from(val: Number) -> Self {
+        match val {
+            Number::NaN => f64::NAN,
+            Number::Infinity => f64::INFINITY,
+            Number::Float(v) => v,
+            Number::Int(v) => v as f64,
         }
     }
 }
@@ -198,10 +177,10 @@ impl<'a> Object<'a> {
                 match duk_val {
                     Value::Undefined => duk_push_undefined(ctx),
                     Value::Null => duk_push_null(ctx),
-                    Value::Number(ref n) => {
-                        if n.is_nan() {
+                    Value::Number(n) => {
+                        if let Number::NaN = n {
                             duk_push_nan(ctx);
-                        } else if n.is_infinity() {
+                        } else if let Number::Infinity = n {
                             let inf = "Infinity";
                             duk_push_lstring(
                                 ctx,
@@ -209,7 +188,7 @@ impl<'a> Object<'a> {
                                 inf.len() as duk_size_t,
                             );
                         } else {
-                            duk_push_number(ctx, n.as_f64());
+                            duk_push_number(ctx, f64::from(n));
                         }
                     }
                     Value::Boolean(b) => duk_push_boolean(ctx, b as duk_bool_t),
@@ -259,7 +238,7 @@ impl<'a> Object<'a> {
 pub enum Value<'a> {
     Undefined,
     Null,
-    Number(DukNumber),
+    Number(Number),
     Boolean(bool),
     String(String),
     Object(Object<'a>),
@@ -302,7 +281,7 @@ impl<'a> TryInto<String> for Value<'a> {
         match self {
             Value::Undefined => Ok(String::from("undefined")),
             Value::Null => Ok(String::from("null")),
-            Value::Number(n) => Ok(String::from(n.as_str())),
+            Value::Number(n) => Ok(n.to_string()),
             Value::Boolean(b) => Ok(b.to_string()),
             Value::String(s) => Ok(s.clone()),
             Value::Object(o) => match o.encode() {
@@ -327,7 +306,7 @@ impl<'a> TryInto<Object<'a>> for Value<'a> {
 
 impl<'a> Value<'a> {
     /// Return the value as a DukNumber.
-    pub fn as_number(&self) -> Option<DukNumber> {
+    pub fn as_number(&self) -> Option<Number> {
         match self {
             Value::Number(ref n) => Some(n.clone()),
             _ => None,
@@ -337,39 +316,15 @@ impl<'a> Value<'a> {
     /// Return the value as an f64.
     pub fn as_f64(&self) -> Option<f64> {
         match self {
-            Value::Number(ref n) => Some(n.as_f64()),
+            Value::Number(n) => Some(f64::from(n.clone())),
             _ => None,
-        }
-    }
-
-    /// Check if this value is an f64.
-    pub fn is_f64(&self) -> bool {
-        match self {
-            Value::Number(ref n) => n.is_f64(),
-            _ => false,
-        }
-    }
-
-    /// Check if this value is an i64.
-    pub fn is_i64(&self) -> bool {
-        match self {
-            Value::Number(ref n) => n.is_i64(),
-            _ => false,
-        }
-    }
-
-    /// Check if this value is a bool.
-    pub fn is_bool(&self) -> bool {
-        match self {
-            Value::Boolean(_b) => true,
-            _ => false,
         }
     }
 
     /// Return the value as an i64.
     pub fn as_i64(&self) -> Option<i64> {
         match self {
-            Value::Number(ref n) => Some(n.as_i64()),
+            Value::Number(n) => Some(i64::from(n.clone())),
             _ => None,
         }
     }
@@ -480,14 +435,14 @@ impl Context {
             DUK_TYPE_NUMBER => {
                 let v = unsafe { duk_get_number(self.ctx.as_ptr(), -1) };
                 if v.fract() > 0_f64 {
-                    Value::Number(DukNumber::Float(v))
+                    Value::Number(Number::Float(v))
                 } else {
                     if v.is_nan() {
-                        Value::Number(DukNumber::NaN)
+                        Value::Number(Number::NaN)
                     } else if v.is_infinite() {
-                        Value::Number(DukNumber::Infinity)
+                        Value::Number(Number::Infinity)
                     } else {
-                        Value::Number(DukNumber::Int(v as i64))
+                        Value::Number(Number::Int(v as i64))
                     }
                 }
             }
@@ -548,7 +503,7 @@ mod tests {
         let ctx = Context::new().unwrap();
         let val = ctx.eval_string("10+5").unwrap();
         let val = val.as_number().unwrap();
-        assert_eq!(val, DukNumber::Int(15));
+        assert_eq!(val, Number::Int(15));
     }
 
     #[test]
@@ -626,7 +581,7 @@ mod tests {
         // Get the array as an object
         let obj: Object = val.try_into().unwrap();
         // Set index 3 as 4
-        obj.set("3", Value::Number(DukNumber::Int(4)))
+        obj.set("3", Value::Number(Number::Int(4)))
             .unwrap();
         // Encode the object to json and validate it is correct
         assert_eq!("[1,2,3,4]", obj.encode().expect("Should be a string"));
