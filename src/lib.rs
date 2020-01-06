@@ -76,6 +76,15 @@ impl From<Number> for f64 {
     }
 }
 
+impl<'a> From<Value<'a>> for Number {
+    fn from(value: Value<'a>) -> Self {
+        match value {
+            Value::Number(v) => v,
+            _ => Number::NaN,
+        }
+    }
+}
+
 /// A wrapper around duktape's heapptr. These represent JavaScript objects.
 #[derive(Debug)]
 pub struct Object<'a> {
@@ -244,6 +253,22 @@ pub enum Value<'a> {
     Object(Object<'a>),
 }
 
+impl<'a> fmt::Display for Value<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            Value::Undefined => write!(f, "undefined"),
+            Value::Null => write!(f, "null"),
+            Value::Number(n) => write!(f, "{}",n.to_string()),
+            Value::Boolean(b) => write!(f, "{}", b.to_string()),
+            Value::String(s) => write!(f, "{}", s.clone()),
+            Value::Object(o) => match o.encode() {
+                Some(encoded) => write!(f, "{}", encoded),
+                None => write!(f, "{{}}"),
+            },
+        }
+    }
+}
+
 impl<'a> From<bool> for Value<'a> {
     fn from(value: bool) -> Self {
         Value::Boolean(value)
@@ -259,6 +284,18 @@ impl<'a> From<String> for Value<'a> {
 impl<'a> From<&'a str> for Value<'a> {
     fn from(value: &str) -> Self {
         Value::String(String::from(value))
+    }
+}
+
+impl<'a> From<i64> for Value<'a> {
+    fn from(value: i64) -> Self {
+        Value::Number(Number::Int(value))
+    }
+}
+
+impl<'a> From<f64> for Value<'a> {
+    fn from(value: f64) -> Self {
+        Value::Number(Number::Float(value))
     }
 }
 
@@ -304,28 +341,20 @@ impl<'a> TryInto<Object<'a>> for Value<'a> {
     }
 }
 
-impl<'a> Value<'a> {
-    /// Return the value as a DukNumber.
-    pub fn as_number(&self) -> Option<Number> {
-        match self {
-            Value::Number(ref n) => Some(n.clone()),
-            _ => None,
+impl<'a> From<Value<'a>> for i64 {
+    fn from(v: Value<'a>) -> Self {
+        match v {
+            Value::Number(n) => n.into(),
+            _ => f64::NAN as i64,
         }
     }
+}
 
-    /// Return the value as an f64.
-    pub fn as_f64(&self) -> Option<f64> {
-        match self {
-            Value::Number(n) => Some(f64::from(n.clone())),
-            _ => None,
-        }
-    }
-
-    /// Return the value as an i64.
-    pub fn as_i64(&self) -> Option<i64> {
-        match self {
-            Value::Number(n) => Some(i64::from(n.clone())),
-            _ => None,
+impl<'a> From<Value<'a>> for f64 {
+    fn from(v: Value<'a>) -> Self {
+        match v {
+            Value::Number(n) => n.into(),
+            _ => f64::NAN,
         }
     }
 }
@@ -502,8 +531,8 @@ mod tests {
     fn test_eval_to_number() {
         let ctx = Context::new().unwrap();
         let val = ctx.eval_string("10+5").unwrap();
-        let val = val.as_number().unwrap();
-        assert_eq!(val, Number::Int(15));
+        let val: i64 = val.into();
+        assert_eq!(val, 15);
     }
 
     #[test]
@@ -562,6 +591,26 @@ mod tests {
     }
 
     #[test]
+    fn test_set_raw_number() {
+        let ctx = Context::new().unwrap();
+        let obj: Object = ctx.eval_string("({})").unwrap().try_into().unwrap();
+
+        obj.set("value", 2).unwrap();
+
+        assert_eq!(obj.encode().unwrap().as_str(), "{\"value\":2}");
+    }
+
+    #[test]
+    fn test_set_raw_f64() {
+        let ctx = Context::new().unwrap();
+        let obj: Object = ctx.eval_string("({})").unwrap().try_into().unwrap();
+
+        obj.set("value", 2.01_f64).unwrap();
+
+        assert_eq!(obj.encode().unwrap().as_str(), "{\"value\":2.01}");
+    }
+
+    #[test]
     fn test_get_prop_from_object() {
         let ctx = Context::new().unwrap();
         let val = ctx.eval_string("({\"some\":\"thing\"})").unwrap();
@@ -581,8 +630,7 @@ mod tests {
         // Get the array as an object
         let obj: Object = val.try_into().unwrap();
         // Set index 3 as 4
-        obj.set("3", Value::Number(Number::Int(4)))
-            .unwrap();
+        obj.set("3", 4_i64).unwrap();
         // Encode the object to json and validate it is correct
         assert_eq!("[1,2,3,4]", obj.encode().expect("Should be a string"));
     }
