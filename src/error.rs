@@ -2,8 +2,8 @@ use std::error::Error;
 use std::fmt;
 
 use dukbind::{
-    DUK_ERR_ERROR, DUK_ERR_EVAL_ERROR, DUK_ERR_NONE, DUK_ERR_RANGE_ERROR, DUK_ERR_SYNTAX_ERROR,
-    DUK_ERR_TYPE_ERROR, DUK_ERR_URI_ERROR, duk_int_t,
+    duk_int_t, DUK_ERR_ERROR, DUK_ERR_EVAL_ERROR, DUK_ERR_NONE, DUK_ERR_RANGE_ERROR,
+    DUK_ERR_SYNTAX_ERROR, DUK_ERR_TYPE_ERROR, DUK_ERR_URI_ERROR,
 };
 
 /// An error code representing why an error occurred.
@@ -20,7 +20,6 @@ pub enum DukErrorCode {
     URI = DUK_ERR_URI_ERROR,
     NullPtr,
 }
-
 
 /// Error object representing a duktape error.
 #[derive(PartialEq, Eq, Debug)]

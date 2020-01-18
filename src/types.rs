@@ -1,8 +1,8 @@
+use crate::context::Object;
+use crate::error::DukError;
 use std::convert::TryInto;
 use std::f64;
 use std::fmt;
-use crate::context::Object;
-use crate::error::DukError;
 
 /// Represents a JavaScript number value. JavaScript numbers can be either floats or integers, as well as NaN and Infinity.
 #[derive(Clone, Debug, PartialEq)]
@@ -55,8 +55,6 @@ impl<'a> From<Value<'a>> for Number {
     }
 }
 
-
-
 /// Represents a JavaScript value type.
 #[derive(Debug)]
 pub enum Value<'a> {
@@ -73,7 +71,7 @@ impl<'a> fmt::Display for Value<'a> {
         match self {
             Value::Undefined => write!(f, "undefined"),
             Value::Null => write!(f, "null"),
-            Value::Number(n) => write!(f, "{}",n.to_string()),
+            Value::Number(n) => write!(f, "{}", n.to_string()),
             Value::Boolean(b) => write!(f, "{}", b.to_string()),
             Value::String(s) => write!(f, "{}", s.clone()),
             Value::Object(o) => match o.encode() {
@@ -151,7 +149,9 @@ impl<'a> TryInto<Object<'a>> for Value<'a> {
         if let Value::Object(o) = self {
             Ok(o)
         } else {
-            Err(DukError::from_str("Could not convert DukValue to DukObject"))
+            Err(DukError::from_str(
+                "Could not convert DukValue to DukObject",
+            ))
         }
     }
 }

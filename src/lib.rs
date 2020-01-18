@@ -1,11 +1,11 @@
 mod context;
-mod types;
 mod error;
+mod types;
 
-pub use types::{ Number, Value };
-pub use error::DukError;
 pub use context::Context;
 pub use context::Object;
+pub use error::DukError;
+pub use types::{Number, Value};
 
 pub type DukResult<T> = std::result::Result<T, DukError>;
 

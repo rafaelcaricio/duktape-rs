@@ -1,13 +1,18 @@
+use crate::error::DukError;
+use crate::error::DukErrorCode;
+use crate::types::Number;
+use crate::types::Value;
+use crate::DukResult;
 use anyhow;
 use dukbind::{
-    duk_bool_t, duk_context, duk_create_heap_default, duk_del_prop, duk_destroy_heap, duk_dup,
-    duk_eval_string, duk_get_boolean, duk_get_error_code, duk_get_heapptr, duk_get_number,
-    duk_get_prop_lstring, duk_get_string, duk_get_type, duk_is_undefined,
-    duk_json_decode, duk_json_encode, duk_pop, duk_pop_2, duk_push_boolean, duk_push_heap_stash,
-    duk_push_heapptr, duk_push_lstring, duk_push_nan, duk_push_null, duk_push_number,
-    duk_push_pointer, duk_push_undefined, duk_put_prop, duk_put_prop_lstring, duk_size_t,
-    DUK_TYPE_BOOLEAN, DUK_TYPE_NONE, DUK_TYPE_NULL,
-    DUK_TYPE_NUMBER, DUK_TYPE_OBJECT, DUK_TYPE_STRING, DUK_TYPE_UNDEFINED,
+    double_t, duk_bool_t, duk_context, duk_create_heap_default, duk_del_prop, duk_destroy_heap,
+    duk_dup, duk_eval_string, duk_get_boolean, duk_get_error_code, duk_get_heapptr, duk_get_number,
+    duk_get_prop_lstring, duk_get_string, duk_get_type, duk_is_undefined, duk_json_decode,
+    duk_json_encode, duk_pop, duk_pop_2, duk_push_boolean, duk_push_heap_stash, duk_push_heapptr,
+    duk_push_lstring, duk_push_nan, duk_push_null, duk_push_number, duk_push_pointer,
+    duk_push_undefined, duk_put_prop, duk_put_prop_lstring, duk_size_t, DUK_TYPE_BOOLEAN,
+    DUK_TYPE_NONE, DUK_TYPE_NULL, DUK_TYPE_NUMBER, DUK_TYPE_OBJECT, DUK_TYPE_STRING,
+    DUK_TYPE_UNDEFINED,
 };
 use std::convert::TryInto;
 use std::f64;
@@ -15,11 +20,6 @@ use std::ffi::{CStr, CString};
 use std::mem;
 use std::os::raw::c_void;
 use std::ptr::NonNull;
-use crate::types::Value;
-use crate::types::Number;
-use crate::error::DukError;
-use crate::error::DukErrorCode;
-use crate::DukResult;
 
 /// Wrapper around low level API calls. Guarantees the call blocks are safe and don't leave dirt on the JS stack.
 struct CallBlock<'a> {
@@ -33,6 +33,14 @@ impl<'a> CallBlock<'a> {
             stack_size: 0,
             context,
         }
+    }
+
+    fn inc(&mut self) {
+        self.stack_size += 1;
+    }
+
+    fn dec(&mut self) {
+        self.stack_size -= 1;
     }
 
     /// Get a DukValue from the value at the top of the value stack in the context.
@@ -79,14 +87,6 @@ impl<'a> CallBlock<'a> {
         }
     }
 
-    fn inc(&mut self) {
-        self.stack_size += 1;
-    }
-
-    fn dec(&mut self) {
-        self.stack_size -= 1;
-    }
-
     fn push_lstring(&mut self, string: &str) {
         let s = String::from(string);
         unsafe {
@@ -105,17 +105,20 @@ impl<'a> CallBlock<'a> {
         }
     }
 
-    fn eval_string(&mut self, code :&str) -> u32 {
+    fn eval_string(&mut self, code: &str) -> u32 {
+        // TODO: this method should return Result type
         self.inc();
-        unsafe {
-            duk_eval_string(self.context.ctx.as_ptr(), code)
-        }
+        unsafe { duk_eval_string(self.context.ctx.as_ptr(), code) }
     }
 
     fn get_error_code(&self) -> u32 {
-        unsafe {
-            duk_get_error_code(self.context.ctx.as_ptr(), -1) as u32
-        }
+        unsafe { duk_get_error_code(self.context.ctx.as_ptr(), -1) as u32 }
+    }
+
+    fn is_undefined(&self, idx: i32) -> bool {
+        // referenced value needs to be in the stack
+        assert!(self.stack_size >= i32::abs(idx) as u32);
+        unsafe { duk_is_undefined(self.context.ctx.as_ptr(), idx) == 1 }
     }
 
     fn get_prop_lstring(&self, idx: i32, name: &str) -> i32 {
@@ -133,8 +136,50 @@ impl<'a> CallBlock<'a> {
 
     fn push_heapptr(&mut self, heap: &NonNull<c_void>) -> i32 {
         self.inc();
-        unsafe {
-            duk_push_heapptr(self.context.ctx.as_ptr(), heap.as_ptr())
+        unsafe { duk_push_heapptr(self.context.ctx.as_ptr(), heap.as_ptr()) }
+    }
+
+    fn push_undefined(&mut self) {
+        self.inc();
+        unsafe { duk_push_undefined(self.context.ctx.as_ptr()) }
+    }
+
+    fn push_null(&mut self) {
+        self.inc();
+        unsafe { duk_push_null(self.context.ctx.as_ptr()) }
+    }
+
+    fn push_nan(&mut self) {
+        self.inc();
+        unsafe { duk_push_nan(self.context.ctx.as_ptr()) }
+    }
+
+    fn push_number(&mut self, val: f64) {
+        self.inc();
+        unsafe { duk_push_number(self.context.ctx.as_ptr(), val as double_t) }
+    }
+
+    fn push_boolean(&mut self, val: bool) {
+        self.inc();
+        unsafe { duk_push_boolean(self.context.ctx.as_ptr(), val as duk_bool_t) }
+    }
+
+    fn put_prop_lstring(&mut self, obj_idx: i32, prop_name: &str) -> DukResult<()> {
+        // referenced value needs to be in the stack
+        assert!(self.stack_size >= i32::abs(obj_idx) as u32);
+        self.dec();
+        let key = CString::new(prop_name).unwrap();
+        let key_len = prop_name.len() as duk_size_t;
+        let result = unsafe {
+            duk_put_prop_lstring(self.context.ctx.as_ptr(), obj_idx, key.as_ptr(), key_len)
+        };
+        if result == 1 {
+            Ok(())
+        } else {
+            Err(DukError::from(
+                DukErrorCode::Error,
+                "Failed to set property.",
+            ))
         }
     }
 
@@ -149,6 +194,7 @@ impl<'a> CallBlock<'a> {
 }
 
 impl<'a> Drop for CallBlock<'a> {
+    /// We try to guarantee that everything that was added to the stack is popped when we go out of scope
     fn drop(&mut self) {
         for _ in 0..self.stack_size {
             self.pop();
@@ -255,85 +301,63 @@ impl<'a> Object<'a> {
         if bl.get_prop_lstring(idx, name) == 1 {
             Ok(bl.get())
         } else {
-            Err(DukError::from(DukErrorCode::Error, "Could not get property."))
+            Err(DukError::from(
+                DukErrorCode::Error,
+                "Could not get property.",
+            ))
         }
     }
 
     /// Set a property on this object.
     pub fn set<'z, T>(&self, name: &str, value: T) -> DukResult<()>
-        where
-            T: TryInto<Value<'z>>,
+    where
+        T: TryInto<Value<'z>>,
     {
-        let ctx = self.context.ctx.as_ptr();
-        unsafe {
-            duk_push_heapptr(ctx, self.heap.as_ptr());
-            if duk_is_undefined(ctx, -1) == 0 {
-                let mut ok = true;
-                let duk_val = match value.try_into() {
-                    Ok(v) => v,
-                    Err(_) => {
-                        let err_msg = format!("Could not convert parameter to DukValue");
-                        return Err(DukError::from_str(err_msg));
-                    }
-                };
-                match duk_val {
-                    Value::Undefined => duk_push_undefined(ctx),
-                    Value::Null => duk_push_null(ctx),
-                    Value::Number(n) => {
-                        if let Number::NaN = n {
-                            duk_push_nan(ctx);
-                        } else if let Number::Infinity = n {
-                            let inf = "Infinity";
-                            duk_push_lstring(
-                                ctx,
-                                inf.as_ptr() as *const i8,
-                                inf.len() as duk_size_t,
-                            );
-                        } else {
-                            duk_push_number(ctx, f64::from(n));
-                        }
-                    }
-                    Value::Boolean(b) => duk_push_boolean(ctx, b as duk_bool_t),
-                    Value::String(s) => {
-                        let t = &s;
-                        duk_push_lstring(ctx, t.as_ptr() as *const i8, t.len() as duk_size_t);
-                    }
-                    Value::Object(ref o) => {
-                        duk_push_heapptr(ctx, o.heap.as_ptr());
-                        if duk_is_undefined(ctx, -1) == 1 {
-                            duk_pop(ctx);
-                            ok = false;
-                        }
-                    }
-                };
-                if ok {
-                    let len = name.len();
-                    let name = CString::new(name).unwrap();
-                    if duk_put_prop_lstring(
-                        ctx,
-                        -2,
-                        name.as_ptr(),
-                        len as duk_size_t,
-                    ) == 1
-                    {
-                        duk_pop(ctx);
-                        Ok(())
-                    } else {
-                        duk_pop(ctx);
-                        Err(DukError::from(DukErrorCode::Error, "Failed to set prop."))
-                    }
-                } else {
-                    duk_pop(ctx);
-                    Err(DukError::from(DukErrorCode::Error, "Error setting prop."))
-                }
-            } else {
-                duk_pop(ctx);
-                Err(DukError::from(
-                    DukErrorCode::NullPtr,
-                    "Invalid heap pointer.",
-                ))
-            }
+        let mut bl = CallBlock::from(self.context);
+
+        bl.push_heapptr(&self.heap);
+        if bl.is_undefined(-1) {
+            return Err(DukError::from(
+                DukErrorCode::NullPtr,
+                "Invalid heap pointer, cannot set property on an undefined object.",
+            ));
         }
+
+        let duk_val = match value.try_into() {
+            Ok(v) => v,
+            Err(_) => {
+                let err_msg = format!("Could not convert parameter to DukValue");
+                return Err(DukError::from_str(err_msg));
+            }
+        };
+
+        match duk_val {
+            Value::Undefined => bl.push_undefined(),
+            Value::Null => bl.push_null(),
+            Value::Number(n) => {
+                if let Number::NaN = n {
+                    bl.push_nan();
+                } else if let Number::Infinity = n {
+                    bl.push_lstring("Infinity")
+                } else {
+                    bl.push_number(f64::from(n));
+                }
+            }
+            Value::Boolean(b) => bl.push_boolean(b),
+            Value::String(s) => bl.push_lstring(s.as_str()),
+            Value::Object(ref o) => {
+                bl.push_heapptr(&o.heap);
+                if bl.is_undefined(-1) {
+                    return Err(DukError::from(
+                        DukErrorCode::Error,
+                        "Error setting property to undefined object.",
+                    ));
+                }
+            }
+        };
+
+        bl.put_prop_lstring(-2, name)?;
+        Ok(())
     }
 }
 
