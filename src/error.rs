@@ -22,7 +22,6 @@ pub enum DukErrorCode {
 }
 
 
-
 /// Error object representing a duktape error.
 #[derive(PartialEq, Eq, Debug)]
 pub struct DukError {

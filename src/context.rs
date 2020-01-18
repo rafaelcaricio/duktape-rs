@@ -34,6 +34,126 @@ impl<'a> CallBlock<'a> {
             context,
         }
     }
+
+    /// Get a DukValue from the value at the top of the value stack in the context.
+    fn get(&self) -> Value<'a> {
+        // Make sure we have something in the stack to get
+        assert!(self.stack_size > 0);
+
+        let duk_type = unsafe { duk_get_type(self.context.ctx.as_ptr(), -1) as u32 };
+        match duk_type {
+            DUK_TYPE_NONE => Value::Null,
+            DUK_TYPE_UNDEFINED => Value::Undefined,
+            DUK_TYPE_NULL => Value::Null,
+            DUK_TYPE_BOOLEAN => {
+                let val = unsafe { duk_get_boolean(self.context.ctx.as_ptr(), -1) };
+                Value::Boolean(val == 1)
+            }
+            DUK_TYPE_NUMBER => {
+                let v = unsafe { duk_get_number(self.context.ctx.as_ptr(), -1) };
+                if v.fract() > 0_f64 {
+                    Value::Number(Number::Float(v))
+                } else {
+                    if v.is_nan() {
+                        Value::Number(Number::NaN)
+                    } else if v.is_infinite() {
+                        Value::Number(Number::Infinity)
+                    } else {
+                        Value::Number(Number::Int(v as i64))
+                    }
+                }
+            }
+            DUK_TYPE_STRING => {
+                let v = unsafe {
+                    let v = duk_get_string(self.context.ctx.as_ptr(), -1);
+                    CStr::from_ptr(v)
+                };
+                let cow = v.to_string_lossy();
+                Value::String(String::from(cow))
+            }
+            DUK_TYPE_OBJECT => {
+                let obj = Object::new(self.context);
+                Value::Object(obj)
+            }
+            _ => Value::Undefined,
+        }
+    }
+
+    fn inc(&mut self) {
+        self.stack_size += 1;
+    }
+
+    fn dec(&mut self) {
+        self.stack_size -= 1;
+    }
+
+    fn push_lstring(&mut self, string: &str) {
+        let s = String::from(string);
+        unsafe {
+            duk_push_lstring(
+                self.context.ctx.as_ptr(),
+                s.as_ptr() as *const i8,
+                s.len() as duk_size_t,
+            );
+        }
+        self.inc();
+    }
+
+    fn json_decode(&self) {
+        unsafe {
+            duk_json_decode(self.context.ctx.as_ptr(), -1);
+        }
+    }
+
+    fn eval_string(&mut self, code :&str) -> u32 {
+        self.inc();
+        unsafe {
+            duk_eval_string(self.context.ctx.as_ptr(), code)
+        }
+    }
+
+    fn get_error_code(&self) -> u32 {
+        unsafe {
+            duk_get_error_code(self.context.ctx.as_ptr(), -1) as u32
+        }
+    }
+
+    fn get_prop_lstring(&self, idx: i32, name: &str) -> i32 {
+        // referenced value needs to be in the stack
+        assert!(self.stack_size >= i32::abs(idx) as u32);
+        unsafe {
+            duk_get_prop_lstring(
+                self.context.ctx.as_ptr(),
+                idx,
+                name.as_ptr() as *const i8,
+                name.len() as duk_size_t,
+            ) as i32
+        }
+    }
+
+    fn push_heapptr(&mut self, heap: &NonNull<c_void>) -> i32 {
+        self.inc();
+        unsafe {
+            duk_push_heapptr(self.context.ctx.as_ptr(), heap.as_ptr())
+        }
+    }
+
+    fn pop(&mut self) {
+        // Make sure we have something in the stack to pop
+        assert!(self.stack_size > 0);
+        unsafe {
+            duk_pop(self.context.ctx.as_ptr());
+        }
+        self.dec();
+    }
+}
+
+impl<'a> Drop for CallBlock<'a> {
+    fn drop(&mut self) {
+        for _ in 0..self.stack_size {
+            self.pop();
+        }
+    }
 }
 
 /// Wrapper around a duktape context. Usable for evaluating and returning values from the context that can be used in Rust.
@@ -54,99 +174,24 @@ impl Context {
 
     /// Decode a JSON string into the context, returning a DukObject.
     pub fn decode_json(&self, json: &str) -> Value {
-        self.push_lstring(json);
-        self.json_decode();
-        let result = self.get();
-        self.pop();
-        result
+        let mut bl = CallBlock::from(self);
+        bl.push_lstring(json);
+        bl.json_decode();
+        bl.get()
     }
 
     /// Evaluate a string, returning the resulting value.
     pub fn eval_string(&self, code: &str) -> DukResult<Value> {
-        unsafe {
-            if duk_eval_string(self.ctx.as_ptr(), code) == 0 {
-                let result = self.get();
-                duk_pop(self.ctx.as_ptr());
-                Ok(result)
-            } else {
-                let code = duk_get_error_code(self.ctx.as_ptr(), -1) as u32;
-                let name = "stack";
-                duk_get_prop_lstring(
-                    self.ctx.as_ptr(),
-                    -1,
-                    name.as_ptr() as *const i8,
-                    name.len() as duk_size_t,
-                );
-                let val = self.get();
-                duk_pop(self.ctx.as_ptr());
-                let val: String = val.try_into()?;
-                let c: DukErrorCode = mem::transmute(code);
-                Err(DukError::from(c, val.as_ref()))
-            }
-        }
-    }
-
-    /// Get a DukValue from the value at the top of the value stack in the context.
-    fn get(&self) -> Value {
-        let duk_type = unsafe { duk_get_type(self.ctx.as_ptr(), -1) as u32 };
-        match duk_type {
-            DUK_TYPE_NONE => Value::Null,
-            DUK_TYPE_UNDEFINED => Value::Undefined,
-            DUK_TYPE_NULL => Value::Null,
-            DUK_TYPE_BOOLEAN => {
-                let val = unsafe { duk_get_boolean(self.ctx.as_ptr(), -1) };
-                Value::Boolean(val == 1)
-            }
-            DUK_TYPE_NUMBER => {
-                let v = unsafe { duk_get_number(self.ctx.as_ptr(), -1) };
-                if v.fract() > 0_f64 {
-                    Value::Number(Number::Float(v))
-                } else {
-                    if v.is_nan() {
-                        Value::Number(Number::NaN)
-                    } else if v.is_infinite() {
-                        Value::Number(Number::Infinity)
-                    } else {
-                        Value::Number(Number::Int(v as i64))
-                    }
-                }
-            }
-            DUK_TYPE_STRING => {
-                let v = unsafe {
-                    let v = duk_get_string(self.ctx.as_ptr(), -1);
-                    CStr::from_ptr(v)
-                };
-                let cow = v.to_string_lossy();
-                Value::String(String::from(cow))
-            }
-            DUK_TYPE_OBJECT => {
-                let obj = Object::new(self);
-                Value::Object(obj)
-            }
-            _ => Value::Undefined,
-        }
-    }
-
-    fn push_lstring(&self, string: &str) {
-        let s = String::from(string);
-        unsafe {
-            duk_push_lstring(
-                self.ctx.as_ptr(),
-                s.as_ptr() as *const i8,
-                s.len() as duk_size_t,
-            );
-        }
-    }
-
-    fn json_decode(&self) {
-        unsafe {
-            duk_json_decode(self.ctx.as_ptr(), -1);
-        }
-    }
-
-    fn pop(&self) {
-        unsafe {
-            duk_pop(self.ctx.as_ptr());
+        let mut bl = CallBlock::from(self);
+        if bl.eval_string(code) == 0 {
+            Ok(bl.get())
+        } else {
+            let code = bl.get_error_code();
+            bl.get_prop_lstring(-1, "stack");
+            let val = bl.get();
+            let val: String = val.try_into()?;
+            let c: DukErrorCode = unsafe { mem::transmute(code) };
+            Err(DukError::from(c, val.as_ref()))
         }
     }
 }
@@ -205,25 +250,12 @@ impl<'a> Object<'a> {
 
     /// Get a property on this object as a DukValue.
     pub fn get(&self, name: &str) -> DukResult<Value> {
-        let ctx = self.context.ctx.as_ptr();
-        unsafe {
-            let idx = duk_push_heapptr(ctx, self.heap.as_ptr());
-            if duk_get_prop_lstring(
-                ctx,
-                idx,
-                name.as_ptr() as *const i8,
-                name.len() as duk_size_t,
-            ) == 1
-            {
-                let result = self.context.get();
-                // removes heap (obj) and value from stack
-                duk_pop_2(ctx);
-                Ok(result)
-            } else {
-                // removes the heap (obj) from stack
-                duk_pop(ctx);
-                Err(DukError::from(DukErrorCode::Error, "Could not get property."))
-            }
+        let mut bl = CallBlock::from(self.context);
+        let idx = bl.push_heapptr(&self.heap);
+        if bl.get_prop_lstring(idx, name) == 1 {
+            Ok(bl.get())
+        } else {
+            Err(DukError::from(DukErrorCode::Error, "Could not get property."))
         }
     }
 
