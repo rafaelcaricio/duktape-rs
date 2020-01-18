@@ -297,8 +297,8 @@ impl<'a> Object<'a> {
     /// Get a property on this object as a DukValue.
     pub fn get(&self, name: &str) -> DukResult<Value> {
         let mut bl = CallBlock::from(self.context);
-        let idx = bl.push_heapptr(&self.heap);
-        if bl.get_prop_lstring(idx, name) == 1 {
+        bl.push_heapptr(&self.heap);
+        if bl.get_prop_lstring(-1, name) == 1 {
             Ok(bl.get())
         } else {
             Err(DukError::from(
@@ -313,6 +313,14 @@ impl<'a> Object<'a> {
     where
         T: TryInto<Value<'z>>,
     {
+        let duk_val = match value.try_into() {
+            Ok(v) => v,
+            Err(_) => {
+                let err_msg = format!("Could not convert parameter to DukValue");
+                return Err(DukError::from_str(err_msg));
+            }
+        };
+
         let mut bl = CallBlock::from(self.context);
 
         bl.push_heapptr(&self.heap);
@@ -322,15 +330,6 @@ impl<'a> Object<'a> {
                 "Invalid heap pointer, cannot set property on an undefined object.",
             ));
         }
-
-        let duk_val = match value.try_into() {
-            Ok(v) => v,
-            Err(_) => {
-                let err_msg = format!("Could not convert parameter to DukValue");
-                return Err(DukError::from_str(err_msg));
-            }
-        };
-
         match duk_val {
             Value::Undefined => bl.push_undefined(),
             Value::Null => bl.push_null(),

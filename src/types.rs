@@ -112,6 +112,12 @@ impl<'a> From<f64> for Value<'a> {
     }
 }
 
+impl<'a> From<Object<'a>> for Value<'a> {
+    fn from(value: Object<'a>) -> Self {
+        Value::Object(value)
+    }
+}
+
 impl<'a> TryInto<bool> for Value<'a> {
     type Error = DukError;
 
