@@ -50,12 +50,12 @@ impl<'a> CallBlock<'a> {
     }
 
     /// Get a DukValue from the value at the top of the value stack in the context.
-    fn get(&self) -> Value<'a> {
+    fn get(&mut self) -> Result<Value<'a>, anyhow::Error> {
         // Make sure we have something in the stack to get
         assert!(self.stack_size > 0);
 
         let duk_type = unsafe { duk_get_type(self.ctx_ptr(), -1) as u32 };
-        match duk_type {
+        let res = match duk_type {
             DUK_TYPE_NONE => Value::Null,
             DUK_TYPE_UNDEFINED => Value::Undefined,
             DUK_TYPE_NULL => Value::Null,
@@ -86,11 +86,12 @@ impl<'a> CallBlock<'a> {
                 Value::String(String::from(cow))
             }
             DUK_TYPE_OBJECT => {
-                let obj = Object::new(self.context);
+                let obj = Object::new(self).unwrap();
                 Value::Object(obj)
             }
             _ => Value::Undefined,
-        }
+        };
+        Ok(res)
     }
 
     fn push_lstring(&mut self, string: &str) {
@@ -167,12 +168,47 @@ impl<'a> CallBlock<'a> {
         Ok(String::from(v.to_string_lossy()))
     }
 
+    pub fn get_heapptr(&self, idx: i32) -> Result<NonNull<c_void>, anyhow::Error> {
+        self.validate_stack_idx(idx)?;
+        let heap = unsafe {
+            let ptr = duk_get_heapptr(self.ctx_ptr(), idx);
+            if ptr.is_null() {
+                return Err(anyhow::anyhow!("There is no valid object in the heap."))
+            }
+            NonNull::new_unchecked(ptr)
+        };
+        Ok(heap)
+    }
+
+    pub fn push_pointer(&mut self, ptr: NonNull<c_void>) {
+        self.inc();
+        unsafe { duk_push_pointer(self.ctx_ptr(), ptr.as_ptr()) };
+    }
+
+    pub fn push_heap_stash(&mut self) {
+        self.inc();
+        unsafe { duk_push_heap_stash(self.ctx_ptr()) };
+    }
+
+    pub fn put_prop(&mut self, idx: i32) -> Result<(), anyhow::Error> {
+        self.validate_stack_idx(idx)?;
+        let res = unsafe { duk_put_prop(self.ctx_ptr(), idx) };
+        self.dec();
+        self.dec();
+        if res == 1 {
+            Ok(())
+        } else {
+            // TODO: catch error from JS
+            Err(anyhow::anyhow!("JS error thrown while trying to set prop"))
+        }
+    }
+
     fn get_prop_lstring(&self, idx: i32, name: &str) -> i32 {
         // referenced value needs to be in the stack
         assert!(self.stack_size >= i32::abs(idx) as u32);
         unsafe {
             duk_get_prop_lstring(
-                self.context.ctx.as_ptr(),
+                self.ctx_ptr(),
                 idx,
                 name.as_ptr() as *const i8,
                 name.len() as duk_size_t,
@@ -182,32 +218,32 @@ impl<'a> CallBlock<'a> {
 
     fn push_heapptr(&mut self, heap: &NonNull<c_void>) -> i32 {
         self.inc();
-        unsafe { duk_push_heapptr(self.context.ctx.as_ptr(), heap.as_ptr()) }
+        unsafe { duk_push_heapptr(self.ctx_ptr(), heap.as_ptr()) }
     }
 
     fn push_undefined(&mut self) {
         self.inc();
-        unsafe { duk_push_undefined(self.context.ctx.as_ptr()) }
+        unsafe { duk_push_undefined(self.ctx_ptr()) }
     }
 
     fn push_null(&mut self) {
         self.inc();
-        unsafe { duk_push_null(self.context.ctx.as_ptr()) }
+        unsafe { duk_push_null(self.ctx_ptr()) }
     }
 
     fn push_nan(&mut self) {
         self.inc();
-        unsafe { duk_push_nan(self.context.ctx.as_ptr()) }
+        unsafe { duk_push_nan(self.ctx_ptr()) }
     }
 
     pub fn push_number(&mut self, val: f64) {
         self.inc();
-        unsafe { duk_push_number(self.context.ctx.as_ptr(), val as double_t) }
+        unsafe { duk_push_number(self.ctx_ptr(), val as double_t) }
     }
 
     pub fn push_boolean(&mut self, val: bool) {
         self.inc();
-        unsafe { duk_push_boolean(self.context.ctx.as_ptr(), val as duk_bool_t) }
+        unsafe { duk_push_boolean(self.ctx_ptr(), val as duk_bool_t) }
     }
 
     pub fn put_prop_lstring(&mut self, obj_idx: i32, prop_name: &str) -> DukResult<()> {
@@ -217,7 +253,7 @@ impl<'a> CallBlock<'a> {
         let key = CString::new(prop_name).unwrap();
         let key_len = prop_name.len() as duk_size_t;
         let result = unsafe {
-            duk_put_prop_lstring(self.context.ctx.as_ptr(), obj_idx, key.as_ptr(), key_len)
+            duk_put_prop_lstring(self.ctx_ptr(), obj_idx, key.as_ptr(), key_len)
         };
         if result == 1 {
             Ok(())
@@ -240,7 +276,7 @@ impl<'a> CallBlock<'a> {
         // Make sure we have something in the stack to pop
         assert!(self.stack_size > 0);
         unsafe {
-            duk_pop(self.context.ctx.as_ptr());
+            duk_pop(self.ctx_ptr());
         }
         self.dec();
     }
@@ -277,18 +313,18 @@ impl Context {
         cb.push_lstring(json);
         // We unwrap here because it's a library bug if it fails
         cb.json_decode(-1).unwrap();
-        cb.get()
+        cb.get().unwrap()
     }
 
     /// Evaluate a string, returning the resulting value.
     pub fn eval_string(&self, code: &str) -> DukResult<Value> {
         let mut cb = CallBlock::from(self);
         if cb.eval_string(code) == 0 {
-            Ok(cb.get())
+            Ok(cb.get().unwrap())
         } else {
             let code = cb.get_error_code();
             cb.get_prop_lstring(-1, "stack");
-            let val = cb.get();
+            let val = cb.get().unwrap();
             let val: String = val.try_into()?;
             let c: DukErrorCode = unsafe { mem::transmute(code) };
             Err(DukError::from(c, val.as_ref()))
@@ -314,19 +350,14 @@ pub struct Object<'a> {
 
 impl<'a> Object<'a> {
     /// Creates a new DukObject from the object at the top of the value stack.
-    fn new(context: &'a Context) -> Self {
-        let ctx = context.ctx.as_ptr();
-        let heap = unsafe {
-            let ptr = duk_get_heapptr(ctx, -1);
-            duk_push_heap_stash(ctx);
-            duk_push_pointer(ctx, ptr);
-            duk_dup(ctx, -3);
-            duk_put_prop(ctx, -3);
-            duk_pop(ctx);
-            NonNull::new_unchecked(ptr)
-        };
-
-        Self { heap, context }
+    fn new(cb: &mut CallBlock<'a>) -> Result<Self, anyhow::Error> {
+        let heap_ptr = cb.get_heapptr(-1)?;
+        // Make object reachable for garbage collection
+        cb.push_heap_stash();
+        cb.push_pointer(heap_ptr);
+        cb.dup(-3)?;
+        cb.put_prop(-3)?;
+        Ok(Self { heap: heap_ptr, context: cb.context })
     }
 
     /// Encode this object to a JSON string.
@@ -351,7 +382,7 @@ impl<'a> Object<'a> {
         let mut bl = CallBlock::from(self.context);
         bl.push_heapptr(&self.heap);
         if bl.get_prop_lstring(-1, name) == 1 {
-            Ok(bl.get())
+            Ok(bl.get().unwrap())
         } else {
             Err(DukError::from(
                 DukErrorCode::Error,
