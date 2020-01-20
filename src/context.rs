@@ -4,16 +4,7 @@ use crate::types::Number;
 use crate::types::Value;
 use crate::DukResult;
 use anyhow;
-use dukbind::{
-    double_t, duk_bool_t, duk_context, duk_create_heap_default, duk_del_prop, duk_destroy_heap,
-    duk_dup, duk_eval_string, duk_get_boolean, duk_get_error_code, duk_get_heapptr, duk_get_number,
-    duk_get_prop_lstring, duk_get_string, duk_get_type, duk_is_undefined, duk_json_decode,
-    duk_json_encode, duk_pop, duk_pop_2, duk_push_boolean, duk_push_heap_stash, duk_push_heapptr,
-    duk_push_lstring, duk_push_nan, duk_push_null, duk_push_number, duk_push_pointer,
-    duk_push_undefined, duk_put_prop, duk_put_prop_lstring, duk_size_t, DUK_TYPE_BOOLEAN,
-    DUK_TYPE_NONE, DUK_TYPE_NULL, DUK_TYPE_NUMBER, DUK_TYPE_OBJECT, DUK_TYPE_STRING,
-    DUK_TYPE_UNDEFINED,
-};
+use dukbind::{double_t, duk_bool_t, duk_context, duk_create_heap_default, duk_del_prop, duk_destroy_heap, duk_dup, duk_eval_string, duk_get_boolean, duk_get_error_code, duk_get_heapptr, duk_get_number, duk_get_prop_lstring, duk_get_string, duk_get_type, duk_is_undefined, duk_json_decode, duk_json_encode, duk_pop, duk_pop_2, duk_push_boolean, duk_push_heap_stash, duk_push_heapptr, duk_push_lstring, duk_push_nan, duk_push_null, duk_push_number, duk_push_pointer, duk_push_undefined, duk_put_prop, duk_put_prop_lstring, duk_size_t, DUK_TYPE_BOOLEAN, DUK_TYPE_NONE, DUK_TYPE_NULL, DUK_TYPE_NUMBER, DUK_TYPE_OBJECT, DUK_TYPE_STRING, DUK_TYPE_UNDEFINED, duk_is_null, duk_is_object, duk_to_string};
 use std::convert::TryInto;
 use std::f64;
 use std::ffi::{CStr, CString};
@@ -43,22 +34,37 @@ impl<'a> CallBlock<'a> {
         self.stack_size -= 1;
     }
 
+    /// Validates the referenced value by idx is present in the stack.
+    fn validate_stack_idx(&self, idx: i32) -> Result<(), anyhow::Error> {
+        if i32::abs(idx) as u32 <= self.stack_size {
+            Ok(())
+        } else {
+            let msg = format!("The {} index is not a valid index for the current stack of size {}", idx, self.stack_size);
+            Err(anyhow::anyhow!(msg))
+        }
+    }
+
+    /// Gets internal context pointer.
+    fn ctx_ptr(&self) -> *mut duk_context {
+        self.context.ctx.as_ptr()
+    }
+
     /// Get a DukValue from the value at the top of the value stack in the context.
     fn get(&self) -> Value<'a> {
         // Make sure we have something in the stack to get
         assert!(self.stack_size > 0);
 
-        let duk_type = unsafe { duk_get_type(self.context.ctx.as_ptr(), -1) as u32 };
+        let duk_type = unsafe { duk_get_type(self.ctx_ptr(), -1) as u32 };
         match duk_type {
             DUK_TYPE_NONE => Value::Null,
             DUK_TYPE_UNDEFINED => Value::Undefined,
             DUK_TYPE_NULL => Value::Null,
             DUK_TYPE_BOOLEAN => {
-                let val = unsafe { duk_get_boolean(self.context.ctx.as_ptr(), -1) };
+                let val = unsafe { duk_get_boolean(self.ctx_ptr(), -1) };
                 Value::Boolean(val == 1)
             }
             DUK_TYPE_NUMBER => {
-                let v = unsafe { duk_get_number(self.context.ctx.as_ptr(), -1) };
+                let v = unsafe { duk_get_number(self.ctx_ptr(), -1) };
                 if v.fract() > 0_f64 {
                     Value::Number(Number::Float(v))
                 } else {
@@ -73,7 +79,7 @@ impl<'a> CallBlock<'a> {
             }
             DUK_TYPE_STRING => {
                 let v = unsafe {
-                    let v = duk_get_string(self.context.ctx.as_ptr(), -1);
+                    let v = duk_get_string(self.ctx_ptr(), -1);
                     CStr::from_ptr(v)
                 };
                 let cow = v.to_string_lossy();
@@ -91,7 +97,7 @@ impl<'a> CallBlock<'a> {
         let s = String::from(string);
         unsafe {
             duk_push_lstring(
-                self.context.ctx.as_ptr(),
+                self.ctx_ptr(),
                 s.as_ptr() as *const i8,
                 s.len() as duk_size_t,
             );
@@ -99,10 +105,25 @@ impl<'a> CallBlock<'a> {
         self.inc();
     }
 
-    fn json_decode(&self) {
+    pub fn json_decode(&self, idx: i32) -> Result<(), anyhow::Error> {
+        // referenced value needs to be in the stack
+        self.validate_stack_idx(idx)?;
         unsafe {
-            duk_json_decode(self.context.ctx.as_ptr(), -1);
+            duk_json_decode(self.ctx_ptr(), idx);
         }
+        Ok(())
+    }
+
+    pub fn json_encode(&self, idx: i32) -> Result<String, anyhow::Error> {
+        self.validate_stack_idx(idx)?;
+        let t = unsafe {
+            let raw = duk_json_encode(self.ctx_ptr(), idx);
+            if raw.is_null() {
+                return Err(anyhow::anyhow!("Could not encode value as string"));
+            }
+            CStr::from_ptr(raw)
+        };
+        Ok(String::from(t.to_string_lossy()))
     }
 
     fn eval_string(&mut self, code: &str) -> u32 {
@@ -115,10 +136,35 @@ impl<'a> CallBlock<'a> {
         unsafe { duk_get_error_code(self.context.ctx.as_ptr(), -1) as u32 }
     }
 
-    fn is_undefined(&self, idx: i32) -> bool {
+    pub fn is_undefined(&self, idx: i32) -> Result<bool, anyhow::Error> {
         // referenced value needs to be in the stack
-        assert!(self.stack_size >= i32::abs(idx) as u32);
-        unsafe { duk_is_undefined(self.context.ctx.as_ptr(), idx) == 1 }
+        self.validate_stack_idx(idx)?;
+        let r = unsafe { duk_is_undefined(self.ctx_ptr(), idx) };
+        Ok(r == 1)
+    }
+
+    pub fn is_null(&self, idx: i32) -> Result<bool, anyhow::Error> {
+        self.validate_stack_idx(idx)?;
+        let val = unsafe { duk_is_null(self.ctx_ptr(), idx) };
+        Ok(val == 1)
+    }
+
+    pub fn is_object(&self, idx: i32) -> Result<bool, anyhow::Error> {
+        self.validate_stack_idx(idx)?;
+        let val = unsafe { duk_is_object(self.ctx_ptr(), idx) };
+        Ok(val == 1)
+    }
+
+    pub fn to_string(&self, idx: i32) -> Result<String, anyhow::Error> {
+        self.validate_stack_idx(idx)?;
+        let val = unsafe { duk_to_string(self.ctx_ptr(), idx) };
+        if val.is_null() {
+            return Err(anyhow::anyhow!("Could not convert value to string in Javascript."));
+        }
+        let v = unsafe {
+            CStr::from_ptr(val)
+        };
+        Ok(String::from(v.to_string_lossy()))
     }
 
     fn get_prop_lstring(&self, idx: i32, name: &str) -> i32 {
@@ -154,17 +200,17 @@ impl<'a> CallBlock<'a> {
         unsafe { duk_push_nan(self.context.ctx.as_ptr()) }
     }
 
-    fn push_number(&mut self, val: f64) {
+    pub fn push_number(&mut self, val: f64) {
         self.inc();
         unsafe { duk_push_number(self.context.ctx.as_ptr(), val as double_t) }
     }
 
-    fn push_boolean(&mut self, val: bool) {
+    pub fn push_boolean(&mut self, val: bool) {
         self.inc();
         unsafe { duk_push_boolean(self.context.ctx.as_ptr(), val as duk_bool_t) }
     }
 
-    fn put_prop_lstring(&mut self, obj_idx: i32, prop_name: &str) -> DukResult<()> {
+    pub fn put_prop_lstring(&mut self, obj_idx: i32, prop_name: &str) -> DukResult<()> {
         // referenced value needs to be in the stack
         assert!(self.stack_size >= i32::abs(obj_idx) as u32);
         self.dec();
@@ -181,6 +227,13 @@ impl<'a> CallBlock<'a> {
                 "Failed to set property.",
             ))
         }
+    }
+
+    pub fn dup(&mut self, idx: i32) -> Result<(), anyhow::Error> {
+        self.validate_stack_idx(idx).map(|_| {
+            self.inc();
+            unsafe { duk_dup(self.ctx_ptr(), idx) }
+        })
     }
 
     fn pop(&mut self) {
@@ -220,21 +273,22 @@ impl Context {
 
     /// Decode a JSON string into the context, returning a DukObject.
     pub fn decode_json(&self, json: &str) -> Value {
-        let mut bl = CallBlock::from(self);
-        bl.push_lstring(json);
-        bl.json_decode();
-        bl.get()
+        let mut cb = CallBlock::from(self);
+        cb.push_lstring(json);
+        // We unwrap here because it's a library bug if it fails
+        cb.json_decode(-1).unwrap();
+        cb.get()
     }
 
     /// Evaluate a string, returning the resulting value.
     pub fn eval_string(&self, code: &str) -> DukResult<Value> {
-        let mut bl = CallBlock::from(self);
-        if bl.eval_string(code) == 0 {
-            Ok(bl.get())
+        let mut cb = CallBlock::from(self);
+        if cb.eval_string(code) == 0 {
+            Ok(cb.get())
         } else {
-            let code = bl.get_error_code();
-            bl.get_prop_lstring(-1, "stack");
-            let val = bl.get();
+            let code = cb.get_error_code();
+            cb.get_prop_lstring(-1, "stack");
+            let val = cb.get();
             let val: String = val.try_into()?;
             let c: DukErrorCode = unsafe { mem::transmute(code) };
             Err(DukError::from(c, val.as_ref()))
@@ -277,19 +331,17 @@ impl<'a> Object<'a> {
 
     /// Encode this object to a JSON string.
     pub fn encode(&self) -> Option<String> {
-        let ctx = self.context.ctx.as_ptr();
-        unsafe {
-            let idx = duk_push_heapptr(ctx, self.heap.as_ptr());
-            if duk_is_undefined(ctx, idx) == 0 {
-                duk_dup(ctx, idx);
-                let raw = duk_json_encode(ctx, -1);
-                let t = CStr::from_ptr(raw);
-                let cow = t.to_string_lossy();
-                duk_pop_2(ctx);
-                Some(String::from(cow))
-            } else {
-                duk_pop(ctx);
-                None
+        let mut cb = CallBlock::from(self.context);
+        cb.push_heapptr(&self.heap);
+        if cb.is_undefined(-1).unwrap() {
+            None
+        } else {
+            cb.dup(-1).unwrap();
+            match cb.json_encode(-1) {
+                Ok(v) => Some(v),
+                Err(_) => {
+                    None
+                }
             }
         }
     }
@@ -324,7 +376,7 @@ impl<'a> Object<'a> {
         let mut bl = CallBlock::from(self.context);
 
         bl.push_heapptr(&self.heap);
-        if bl.is_undefined(-1) {
+        if bl.is_undefined(-1).unwrap() {
             return Err(DukError::from(
                 DukErrorCode::NullPtr,
                 "Invalid heap pointer, cannot set property on an undefined object.",
@@ -346,7 +398,7 @@ impl<'a> Object<'a> {
             Value::String(s) => bl.push_lstring(s.as_str()),
             Value::Object(ref o) => {
                 bl.push_heapptr(&o.heap);
-                if bl.is_undefined(-1) {
+                if bl.is_undefined(-1).unwrap() {
                     return Err(DukError::from(
                         DukErrorCode::Error,
                         "Error setting property to undefined object.",
